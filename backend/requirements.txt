@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+SQLAlchemy
+aiomysql
+greenlet
+redis
+APScheduler
+groq
+sqlparse
+python-dotenv
+Faker
+langfuse
