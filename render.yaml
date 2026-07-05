@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: mvp-backend
+    env: python
+    rootDir: backend
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: CORS_ALLOW_ORIGINS
+        value: "*" # Change this to your Vercel URL once deployed for security (e.g., https://your-app.vercel.app)
+      - key: GROQ_API_KEY
+        sync: false
+      - key: APP_DATABASE_URL
+        sync: false # Aiven MySQL URL
+      - key: READONLY_DATABASE_URL
+        sync: false # Aiven MySQL URL
