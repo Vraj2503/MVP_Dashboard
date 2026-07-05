@@ -20,6 +20,7 @@ from .db import engine, Base, AppSessionLocal
 from .models import (
     Student, Teacher, ClassGroup, Attendance, Assessment,
     Assignment, Fee, BehaviorNote, StudentSummary,
+    Course, FeeInvoice, Payment, User,
     GenderEnum, FeeStatus, RiskTier
 )
 from .services.risk_engine import compute_risk, RiskInputs
@@ -86,6 +87,39 @@ def generate_classes(teachers) -> List[dict]:
     return classes
 
 
+def generate_users() -> List[dict]:
+    return [
+        {
+            "id": 1,
+            "username": "admin",
+            "email": "admin@school.com",
+            "role": "admin"
+        },
+        {
+            "id": 2,
+            "username": "principal",
+            "email": "principal@school.com",
+            "role": "principal"
+        }
+    ]
+
+
+def generate_courses() -> List[dict]:
+    courses = []
+    cid = 1
+    for dept_id, name in enumerate(["Mathematics", "Science", "English", "History", "Arts", "Physical Education"], 1):
+        for level in range(1, 5):
+            courses.append({
+                "id": cid,
+                "department_id": dept_id,
+                "code": f"{name[:3].upper()}{random.randint(100, 499)}",
+                "name": f"{name} - Level {level}",
+                "credits": random.choice([3, 4])
+            })
+            cid += 1
+    return courses
+
+
 async def seed_data(session: AsyncSession):
     # 1. Teachers
     teachers = generate_teachers()
@@ -95,7 +129,16 @@ async def seed_data(session: AsyncSession):
     classes = generate_classes(teachers)
     await session.execute(insert(ClassGroup).values(classes))
     
-    logger.info(f"Inserted {len(teachers)} teachers, {len(classes)} classes")
+    # 2b. Users
+    users = generate_users()
+    await session.execute(insert(User).values(users))
+
+    # 2c. Courses
+    courses = generate_courses()
+    await session.execute(insert(Course).values(courses))
+    course_names = [c["name"] for c in courses]
+    
+    logger.info(f"Inserted {len(teachers)} teachers, {len(classes)} classes, {len(users)} users, {len(courses)} courses")
 
     # 3. Students & Related Data
     # Distributions: ~10% at-risk, ~70% average, ~20% high-performing.
@@ -106,204 +149,229 @@ async def seed_data(session: AsyncSession):
     story_slipping_high_performer = None
     story_improved_student = None
 
-    students_batch = []
-    attendance_batch = []
-    assessments_batch = []
-    assignments_batch = []
-    fees_batch = []
-    summary_batch = []
-    
     attendance_id_counter = 1
     assessment_id_counter = 1
     assignment_id_counter = 1
     fee_id_counter = 1
+    fee_invoice_id_counter = 1
+    payment_id_counter = 1
+    note_id_counter = 1
     
-    def flush_batches():
-        nonlocal students_batch, attendance_batch, assessments_batch, assignments_batch, fees_batch, summary_batch
-        return (students_batch, attendance_batch, assessments_batch, assignments_batch, fees_batch, summary_batch)
-
-    logger.info("Generating students and related records...")
-    for i in range(1, NUM_STUDENTS + 1):
-        rand_val = random.random()
-        if rand_val < 0.10:
-            profile = "at-risk"
-            base_att = random.uniform(0.60, 0.80)
-            base_grade = random.uniform(40, 65)
-            base_miss = random.uniform(0.3, 0.7)
-        elif rand_val < 0.80:
-            profile = "average"
-            base_att = random.uniform(0.85, 0.95)
-            base_grade = random.uniform(70, 85)
-            base_miss = random.uniform(0.05, 0.2)
-        else:
-            profile = "high-performing"
-            base_att = random.uniform(0.95, 1.0)
-            base_grade = random.uniform(88, 100)
-            base_miss = random.uniform(0.0, 0.05)
-
-        c = random.choice(classes)
+    for batch_start in range(1, NUM_STUDENTS + 1, BATCH_SIZE):
+        batch_end = min(batch_start + BATCH_SIZE, NUM_STUDENTS + 1)
         
-        # Plant stories overrides
-        is_story_1 = (c["id"] == story_class["id"]) # 1. One class with a sudden attendance drop
-        is_story_2 = False
-        if len(story_fee_declining_cluster) < 15 and profile == "average":
-            is_story_2 = True
-            story_fee_declining_cluster.append(i)
-        
-        is_story_3 = False
-        if story_slipping_high_performer is None and profile == "high-performing" and i > 50:
-            is_story_3 = True
-            story_slipping_high_performer = i
-            
-        is_story_4 = False
-        if story_improved_student is None and profile == "at-risk" and i > 100:
-            is_story_4 = True
-            story_improved_student = i
+        students_batch = []
+        attendance_batch = []
+        assessments_batch = []
+        assignments_batch = []
+        fees_batch = []
+        fee_invoices_batch = []
+        payments_batch = []
+        notes_batch = []
+        summary_batch = []
 
-        student = {
-            "id": i,
-            "name": fake.name(),
-            "grade": c["grade"],
-            "section": c["section"],
-            "enrollment_date": _random_date(START_DATE - timedelta(days=365), START_DATE),
-            "parent_contact": fake.phone_number()[:40],
-            "gender": random.choice([GenderEnum.M, GenderEnum.F]),
-            "dob": _random_date(date(2005, 1, 1), date(2010, 12, 31)),
-        }
-        students_batch.append(student)
-
-        # Generate Attendance (simulating 1 record per week to save rows, or just aggregate stats)
-        # We'll generate 10 attendance records per student distributed over the term
-        att_dates = sorted([_random_date(START_DATE, TODAY) for _ in range(10)])
-        att_count = 0
-        for d in att_dates:
-            # Story 1: Sudden attendance drop in last 14 days
-            if is_story_1 and (TODAY - d).days < 14:
-                status = "Absent"
+        logger.info(f"Generating batch {batch_start}...")
+        for i in range(batch_start, batch_end):
+            rand_val = random.random()
+            if rand_val < 0.10:
+                profile = "at-risk"
+                base_att = random.uniform(0.60, 0.80)
+                base_grade = random.uniform(40, 65)
+                base_miss = random.uniform(0.3, 0.7)
+            elif rand_val < 0.80:
+                profile = "average"
+                base_att = random.uniform(0.85, 0.95)
+                base_grade = random.uniform(70, 85)
+                base_miss = random.uniform(0.05, 0.2)
             else:
-                status = "Present" if random.random() < base_att else "Absent"
-            
-            if status == "Present": att_count += 1
-            attendance_batch.append({
-                "id": attendance_id_counter,
-                "student_id": i,
-                "date": d,
-                "status": status,
-                "period": 1
-            })
-            attendance_id_counter += 1
-            
-        actual_att_rate = att_count / 10
+                profile = "high-performing"
+                base_att = random.uniform(0.95, 1.0)
+                base_grade = random.uniform(88, 100)
+                base_miss = random.uniform(0.0, 0.05)
 
-        # Assessments
-        num_assessments = 4
-        grade_sum = 0
-        for a_idx in range(num_assessments):
-            score = max(0, min(100, random.gauss(base_grade, 5)))
+            c = random.choice(classes)
             
-            # Story 2: declining grades
-            if is_story_2 and a_idx >= 2:
-                score -= 20
+            # Plant stories overrides
+            is_story_1 = (c["id"] == story_class["id"]) # 1. One class with a sudden attendance drop
+            is_story_2 = False
+            if len(story_fee_declining_cluster) < 15 and profile == "average":
+                is_story_2 = True
+                story_fee_declining_cluster.append(i)
+            
+            is_story_3 = False
+            if story_slipping_high_performer is None and profile == "high-performing" and i > 50:
+                is_story_3 = True
+                story_slipping_high_performer = i
                 
-            # Story 3: slipping high performer
-            if is_story_3 and a_idx >= 2:
-                score -= 25
+            is_story_4 = False
+            if story_improved_student is None and profile == "at-risk" and i > 100:
+                is_story_4 = True
+                story_improved_student = i
+
+            student = {
+                "id": i,
+                "name": fake.name(),
+                "grade": c["grade"],
+                "section": c["section"],
+                "enrollment_date": _random_date(START_DATE - timedelta(days=365), START_DATE),
+                "parent_contact": fake.phone_number()[:40],
+                "gender": random.choice([GenderEnum.M, GenderEnum.F]),
+                "dob": _random_date(date(2005, 1, 1), date(2010, 12, 31)),
+            }
+            students_batch.append(student)
+
+            # Generate Attendance (simulating 1 record per week to save rows, or just aggregate stats)
+            # We'll generate 10 attendance records per student distributed over the term
+            att_dates = sorted([_random_date(START_DATE, TODAY) for _ in range(10)])
+            att_count = 0
+            for d in att_dates:
+                # Story 1: Sudden attendance drop in last 14 days
+                if is_story_1 and (TODAY - d).days < 14:
+                    status = "Absent"
+                else:
+                    status = "Present" if random.random() < base_att else "Absent"
                 
-            # Story 4: improved student
-            if is_story_4 and a_idx >= 2:
-                score += 35
+                if status == "Present": att_count += 1
+                attendance_batch.append({
+                    "id": attendance_id_counter,
+                    "student_id": i,
+                    "date": d,
+                    "status": status,
+                    "period": 1
+                })
+                attendance_id_counter += 1
                 
-            grade_sum += score
-            assessments_batch.append({
-                "id": assessment_id_counter,
+            actual_att_rate = att_count / 10
+
+            # Assessments
+            num_assessments = 4
+            grade_sum = 0
+            for a_idx in range(num_assessments):
+                score = max(0, min(100, random.gauss(base_grade, 5)))
+                
+                # Story 2: declining grades
+                if is_story_2 and a_idx >= 2:
+                    score -= 20
+                    
+                # Story 3: slipping high performer
+                if is_story_3 and a_idx >= 2:
+                    score -= 25
+                    
+                # Story 4: improved student
+                if is_story_4 and a_idx >= 2:
+                    score += 35
+                    
+                grade_sum += score
+                assessments_batch.append({
+                    "id": assessment_id_counter,
+                    "student_id": i,
+                    "subject": random.choice(course_names),
+                    "type": "Quiz",
+                    "score": round(score, 1),
+                    "max_score": 100.0,
+                    "date": _random_date(START_DATE, TODAY)
+                })
+                assessment_id_counter += 1
+                
+            actual_grade_avg = grade_sum / num_assessments
+
+            # Assignments
+            num_assignments = 5
+            miss_count = 0
+            for a_idx in range(num_assignments):
+                submitted = random.random() > base_miss
+                if not submitted:
+                    miss_count += 1
+                assignments_batch.append({
+                    "id": assignment_id_counter,
+                    "student_id": i,
+                    "title": f"Homework {a_idx+1}",
+                    "submitted": submitted,
+                    "on_time": submitted,
+                    "score": random.uniform(70, 100) if submitted else 0.0,
+                    "due_date": _random_date(START_DATE, TODAY)
+                })
+                assignment_id_counter += 1
+                
+            actual_miss_rate = miss_count / num_assignments
+
+            # Fees
+            fee_stat = FeeStatus.PAID
+            amt_due = 1500.0
+            amt_paid = 1500.0
+            if profile == "at-risk" and random.random() < 0.5:
+                fee_stat = FeeStatus.OVERDUE
+                amt_paid = 0.0
+            elif is_story_2:
+                fee_stat = FeeStatus.OVERDUE
+                amt_paid = 0.0
+                
+            fees_batch.append({
+                "id": fee_id_counter,
                 "student_id": i,
-                "subject": "Core",
-                "type": "Quiz",
-                "score": round(score, 1),
-                "max_score": 100.0,
-                "date": _random_date(START_DATE, TODAY)
+                "term": "Fall 2025",
+                "amount_due": amt_due,
+                "amount_paid": amt_paid,
+                "due_date": START_DATE + timedelta(days=30),
+                "status": fee_stat
             })
-            assessment_id_counter += 1
+            fee_id_counter += 1
             
-        actual_grade_avg = grade_sum / num_assessments
-
-        # Assignments
-        num_assignments = 5
-        miss_count = 0
-        for a_idx in range(num_assignments):
-            submitted = random.random() > base_miss
-            if not submitted:
-                miss_count += 1
-            assignments_batch.append({
-                "id": assignment_id_counter,
+            # Also create a FeeInvoice and Payment to reflect this
+            due_date_invoice = START_DATE + timedelta(days=random.randint(15, 45))
+            invoice_status = "Unpaid" if fee_stat == FeeStatus.OVERDUE else "Paid"
+            fee_invoices_batch.append({
+                "id": fee_invoice_id_counter,
                 "student_id": i,
-                "title": f"Homework {a_idx+1}",
-                "submitted": submitted,
-                "on_time": submitted,
-                "score": random.uniform(70, 100) if submitted else 0.0,
-                "due_date": _random_date(START_DATE, TODAY)
+                "term": "Fall 2025",
+                "amount": amt_due,
+                "due_date": due_date_invoice,
+                "status": invoice_status
             })
-            assignment_id_counter += 1
             
-        actual_miss_rate = miss_count / num_assignments
-
-        # Fees
-        fee_stat = FeeStatus.PAID
-        amt_due = 1500.0
-        amt_paid = 1500.0
-        if profile == "at-risk" and random.random() < 0.5:
-            fee_stat = FeeStatus.OVERDUE
-            amt_paid = 0.0
-        elif is_story_2:
-            fee_stat = FeeStatus.OVERDUE
-            amt_paid = 0.0
+            if invoice_status == "Paid":
+                payments_batch.append({
+                    "id": payment_id_counter,
+                    "student_id": i,
+                    "invoice_id": fee_invoice_id_counter,
+                    "amount": amt_paid,
+                    "date": due_date_invoice - timedelta(days=random.randint(1, 10)),
+                    "method": random.choice(["Credit Card", "Bank Transfer", "Cash"])
+                })
+                payment_id_counter += 1
+                
+            fee_invoice_id_counter += 1
             
-        fees_batch.append({
-            "id": fee_id_counter,
-            "student_id": i,
-            "term": "Fall 2025",
-            "amount_due": amt_due,
-            "amount_paid": amt_paid,
-            "due_date": START_DATE + timedelta(days=30),
-            "status": fee_stat
-        })
-        fee_id_counter += 1
-        
-        fee_factor = 1.0 if fee_stat == FeeStatus.OVERDUE else (0.5 if fee_stat != FeeStatus.PAID else 0.0)
+            fee_factor = 1.0 if fee_stat == FeeStatus.OVERDUE else (0.5 if fee_stat != FeeStatus.PAID else 0.0)
 
-        # Summary
-        r_inp = RiskInputs(actual_att_rate, actual_grade_avg, actual_miss_rate, fee_factor)
-        r_score, r_tier = compute_risk(r_inp)
-        
-        summary_batch.append({
-            "student_id": i,
-            "attendance_rate": actual_att_rate,
-            "grade_avg": actual_grade_avg,
-            "assignment_miss_rate": actual_miss_rate,
-            "fee_overdue_factor": fee_factor,
-            "risk_score": r_score,
-            "risk_tier": r_tier,
-        })
+            # Summary
+            r_inp = RiskInputs(actual_att_rate, actual_grade_avg, actual_miss_rate, fee_factor)
+            r_score, r_tier = compute_risk(r_inp)
+            
+            summary_batch.append({
+                "student_id": i,
+                "attendance_rate": actual_att_rate,
+                "grade_avg": actual_grade_avg,
+                "assignment_miss_rate": actual_miss_rate,
+                "fee_overdue_factor": fee_factor,
+                "risk_score": r_score,
+                "risk_tier": r_tier,
+            })
 
-        if len(students_batch) >= BATCH_SIZE:
-            await session.execute(insert(Student).values(students_batch))
-            await session.execute(insert(Attendance).values(attendance_batch))
-            await session.execute(insert(Assessment).values(assessments_batch))
-            await session.execute(insert(Assignment).values(assignments_batch))
-            await session.execute(insert(Fee).values(fees_batch))
-            await session.execute(insert(StudentSummary).values(summary_batch))
-            await session.flush()
-            students_batch, attendance_batch, assessments_batch, assignments_batch, fees_batch, summary_batch = [], [], [], [], [], []
-
-    # Final flush
-    if students_batch:
         await session.execute(insert(Student).values(students_batch))
         await session.execute(insert(Attendance).values(attendance_batch))
         await session.execute(insert(Assessment).values(assessments_batch))
         await session.execute(insert(Assignment).values(assignments_batch))
         await session.execute(insert(Fee).values(fees_batch))
+        await session.execute(insert(FeeInvoice).values(fee_invoices_batch))
+        if payments_batch:
+            await session.execute(insert(Payment).values(payments_batch))
+        if notes_batch:
+            await session.execute(insert(BehaviorNote).values(notes_batch))
         await session.execute(insert(StudentSummary).values(summary_batch))
         await session.flush()
+        
+        logger.info(f"Processed batch {batch_start} to {batch_end-1}")
 
     await session.commit()
     logger.info("Seeding complete.")

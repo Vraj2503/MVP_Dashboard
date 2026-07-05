@@ -42,6 +42,12 @@ CREATE TABLE students (
 );
 CREATE TABLE teachers (id INT, name VARCHAR(120), subject VARCHAR(80));
 CREATE TABLE classes (id INT, name VARCHAR(80), grade INT, section VARCHAR(8), teacher_id INT);
+CREATE TABLE courses (
+  id INT, department_id INT, code VARCHAR(20), name VARCHAR(120), credits INT
+);
+CREATE TABLE users (
+  id INT, username VARCHAR(80), email VARCHAR(120), role VARCHAR(40)
+);
 CREATE TABLE attendance (
   id INT, student_id INT, date DATE, status VARCHAR(16), period INT
 );
@@ -56,6 +62,12 @@ CREATE TABLE assignments (
 CREATE TABLE fees (
   id INT, student_id INT, term VARCHAR(40), amount_due FLOAT, amount_paid FLOAT,
   due_date DATE, status VARCHAR(16)
+);
+CREATE TABLE fee_invoices (
+  id INT, student_id INT, term VARCHAR(40), amount FLOAT, due_date DATE, status VARCHAR(20)
+);
+CREATE TABLE payments (
+  id INT, student_id INT, invoice_id INT, amount FLOAT, date DATE, method VARCHAR(40)
 );
 CREATE TABLE behavior_notes (
   id INT, student_id INT, teacher_id INT, note TEXT, severity VARCHAR(16), date DATE
@@ -116,6 +128,12 @@ SQL: SELECT COUNT(*) AS at_risk_count FROM student_summary WHERE risk_tier = 'AT
 
 Q: "Fee defaulters in grade 10"
 SQL: SELECT s.name, f.amount_due, f.amount_paid, f.status FROM students s JOIN fees f ON s.id = f.student_id WHERE s.grade = 10 AND f.status = 'Overdue'
+
+Q: "Show me all payments made by cash"
+SQL: SELECT p.id, p.amount, p.date, s.name FROM payments p JOIN students s ON p.student_id = s.id WHERE p.method = 'Cash'
+
+Q: "List all courses with 4 credits"
+SQL: SELECT name, code FROM courses WHERE credits = 4
 
 Q: "Show me recent behavior notes for John"
 SQL: SELECT s.name, b.note, b.severity, b.date FROM behavior_notes b JOIN students s ON b.student_id = s.id WHERE s.name LIKE '%John%' ORDER BY b.date DESC LIMIT 5

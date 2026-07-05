@@ -54,12 +54,31 @@ class AlertSeverity(str, enum.Enum):
 # --- Core entities ---------------------------------------------------------
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(80), nullable=False, unique=True, index=True)
+    email = Column(String(120), nullable=False, unique=True)
+    role = Column(String(40), nullable=False, default="admin")
+
+
 class Teacher(Base):
     __tablename__ = "teachers"
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(120), nullable=False)
     subject = Column(String(80), nullable=False, index=True)
+
+
+class Course(Base):
+    __tablename__ = "courses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    department_id = Column(Integer, nullable=False, index=True)
+    code = Column(String(20), nullable=False, index=True)
+    name = Column(String(120), nullable=False)
+    credits = Column(Integer, nullable=False, default=3)
 
 
 class ClassGroup(Base):
@@ -160,6 +179,28 @@ class Fee(Base):
         Index("ix_fees_student_status", "student_id", "status"),
         Index("ix_fees_due_date_status", "due_date", "status"),
     )
+
+
+class FeeInvoice(Base):
+    __tablename__ = "fee_invoices"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+    term = Column(String(40), nullable=False)
+    amount = Column(Float, nullable=False)
+    due_date = Column(Date, nullable=False, index=True)
+    status = Column(String(20), nullable=False, index=True) # e.g., Unpaid, Paid, Partial
+
+
+class Payment(Base):
+    __tablename__ = "payments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+    invoice_id = Column(Integer, ForeignKey("fee_invoices.id"), nullable=True, index=True)
+    amount = Column(Float, nullable=False)
+    date = Column(Date, nullable=False, index=True)
+    method = Column(String(40), nullable=False) # e.g., Credit Card, Cash
 
 
 class BehaviorNote(Base):

@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     # --- NL2SQL allow-list (defense in depth alongside the read-only DB user) ---
     allowed_tables: str = Field(
         "students,teachers,classes,attendance,assessments,assignments,fees,"
-        "behavior_notes,student_summary,alerts,digests,chat_logs",
+        "behavior_notes,student_summary,alerts,digests,chat_logs,courses,fee_invoices,payments,users",
         alias="ALLOWED_TABLES",
     )
     
