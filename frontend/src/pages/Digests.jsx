@@ -8,6 +8,10 @@ export default function Digests() {
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [confirmAction, setConfirmAction] = useState(null);
+  
+  const [preset, setPreset] = useState('14'); // '14', '30', '90', 'custom'
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
 
   const loadDigests = async () => {
     try {
@@ -25,9 +29,21 @@ export default function Digests() {
   }, []);
 
   const handleGenerate = async () => {
+    let s = startDate;
+    let e = endDate;
+    if (preset !== 'custom') {
+      const d = new Date();
+      e = d.toISOString().split('T')[0];
+      const days = parseInt(preset, 10) || 14;
+      d.setDate(d.getDate() - days);
+      s = d.toISOString().split('T')[0];
+    }
+    
+    if (!s || !e) return;
+
     setGenerating(true);
     try {
-      await api.digests.generate();
+      await api.digests.generate(s, e);
       await loadDigests();
     } catch (err) {
       console.error(err);
@@ -74,24 +90,65 @@ export default function Digests() {
 
   return (
     <div>
-      <div className="page-header">
+      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '20px' }}>
         <div>
           <h1 style={{ fontSize: '32px', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '12px', color: 'var(--heading)' }}>
             <FileText color="var(--brand)" /> Periodic Digests
           </h1>
           <p style={{ color: 'var(--body-subtle)' }}>
-            Bi-weekly narrative summaries of institutional performance.
+            Narrative summaries of institutional performance.
           </p>
         </div>
-        <div style={{ display: 'flex', gap: '10px' }}>
-          {digests.length > 0 && (
-            <button className="btn btn-secondary btn-base" style={{ color: 'var(--danger)', borderColor: 'var(--danger-soft)' }} onClick={promptClearAll}>
-              Clear All
-            </button>
+        
+        <div style={{ display: 'flex', alignItems: 'center', gap: '15px', background: 'var(--white)', padding: '12px 20px', borderRadius: '12px', border: '1px solid var(--border-default)', boxShadow: '0 2px 8px rgba(0,0,0,0.02)', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--heading)' }}>
+            <Calendar size={18} color="var(--brand)" />
+            <span style={{ fontWeight: '500', fontSize: '14px' }}>Period:</span>
+          </div>
+          
+          <select 
+            value={preset} 
+            onChange={(e) => setPreset(e.target.value)}
+            style={{ padding: '8px 12px', borderRadius: '6px', border: '1px solid var(--border-default)', outline: 'none', background: 'var(--neutral-tertiary-soft)', fontSize: '14px' }}
+          >
+            <option value="14">Last 14 Days</option>
+            <option value="30">Last 30 Days</option>
+            <option value="90">Last 3 Months</option>
+            <option value="custom">Custom Range</option>
+          </select>
+
+          {preset === 'custom' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <input 
+                type="date" 
+                value={startDate} 
+                onChange={(e) => setStartDate(e.target.value)}
+                style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--border-default)', outline: 'none', fontSize: '13px' }}
+              />
+              <span style={{ color: 'var(--body-subtle)' }}>to</span>
+              <input 
+                type="date" 
+                value={endDate} 
+                onChange={(e) => setEndDate(e.target.value)}
+                style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--border-default)', outline: 'none', fontSize: '13px' }}
+              />
+            </div>
           )}
-          <button className="btn btn-primary btn-base" onClick={handleGenerate} disabled={generating}>
-            {generating ? 'Generating...' : 'Generate New Digest'}
-          </button>
+
+          <div style={{ display: 'flex', gap: '10px', marginLeft: 'auto' }}>
+            {digests.length > 0 && (
+              <button className="btn btn-secondary btn-base" style={{ color: 'var(--danger)', borderColor: 'var(--danger-soft)' }} onClick={promptClearAll}>
+                Clear All
+              </button>
+            )}
+            <button 
+              className="btn btn-primary btn-base" 
+              onClick={handleGenerate} 
+              disabled={generating || (preset === 'custom' && (!startDate || !endDate))}
+            >
+              {generating ? 'Generating...' : 'Generate New Digest'}
+            </button>
+          </div>
         </div>
       </div>
 

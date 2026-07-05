@@ -26,9 +26,16 @@ async def list_digests(db: AsyncSession = Depends(get_db)):
         ))
     return out
 
+from datetime import date
+from typing import Optional
+
 @router.post("/generate", response_model=DigestOut)
-async def trigger_digest(db: AsyncSession = Depends(get_db)):
-    d = await generate_digest(db)
+async def trigger_digest(
+    start_date: Optional[date] = None, 
+    end_date: Optional[date] = None, 
+    db: AsyncSession = Depends(get_db)
+):
+    d = await generate_digest(db, start_date=start_date, end_date=end_date)
     await db.commit()
     return DigestOut(
         id=d.id,

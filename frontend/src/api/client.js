@@ -29,7 +29,13 @@ async function fetchAPI(endpoint, options = {}) {
 export const api = {
   dashboard: {
     getStatic: () => fetchAPI('/dashboard/static'),
-    getAdaptive: () => fetchAPI('/dashboard/adaptive'),
+    getAdaptive: (startDate, endDate) => {
+      const params = new URLSearchParams();
+      if (startDate) params.append('start_date', startDate);
+      if (endDate) params.append('end_date', endDate);
+      const qs = params.toString();
+      return fetchAPI(`/dashboard/adaptive${qs ? `?${qs}` : ''}`);
+    },
   },
   chat: {
     send: (question, sessionId = null, userId = 'admin') => 
@@ -39,7 +45,13 @@ export const api = {
   },
   digests: {
     list: () => fetchAPI('/digests'),
-    generate: () => fetchAPI('/digests/generate', { method: 'POST' }),
+    generate: (startDate, endDate) => {
+      let url = '/digests/generate';
+      if (startDate && endDate) {
+         url += `?start_date=${startDate}&end_date=${endDate}`;
+      }
+      return fetchAPI(url, { method: 'POST' });
+    },
     delete: (id) => fetchAPI(`/digests/${id}`, { method: 'DELETE' }),
     clearAll: () => fetchAPI('/digests', { method: 'DELETE' }),
   },

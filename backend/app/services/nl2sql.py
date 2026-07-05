@@ -99,7 +99,7 @@ Return STRICT JSON. The single allowed shape is:
 COLUMN MAPPING RULES (CRITICAL — follow these exactly):
 - "attendance" or "attendance rate" → student_summary.attendance_rate (FLOAT 0-1)
 - "grades", "GPA", "academic performance" → student_summary.grade_avg (FLOAT 0-100)
-- "risk", "at-risk" → student_summary.risk_score or risk_tier
+- "risk", "at_risk" → student_summary.risk_score or risk_tier
 - "missing assignments" → student_summary.assignment_miss_rate
 - "fee", "overdue" → student_summary.fee_overdue_factor or fees table
 - "grade" (as in school year, e.g., "grade 10") → students.grade (INT)
@@ -112,7 +112,7 @@ Q: "Students with lowest grades"
 SQL: SELECT s.name, ss.grade_avg FROM students s JOIN student_summary ss ON s.id = ss.student_id ORDER BY ss.grade_avg ASC LIMIT 10
 
 Q: "How many students are at risk?"
-SQL: SELECT COUNT(*) AS at_risk_count FROM student_summary WHERE risk_tier = 'High'
+SQL: SELECT COUNT(*) AS at_risk_count FROM student_summary WHERE risk_tier = 'AT_RISK'
 
 Q: "Fee defaulters in grade 10"
 SQL: SELECT s.name, f.amount_due, f.amount_paid, f.status FROM students s JOIN fees f ON s.id = f.student_id WHERE s.grade = 10 AND f.status = 'Overdue'
@@ -260,21 +260,166 @@ async def _execute_sql(session: AsyncSession, sql: str) -> Tuple[List[str], List
 
 
 def _rewrite_sql(sql: str) -> str:
-    """Safety net to catch common LLM mistakes even after few-shot prompting."""
+    """Layer 1: Deterministic post-processing to fix common LLM mistakes.
+
+    This runs BEFORE execution and catches:
+      - Enum value mismatches (case, hyphens, underscores)
+      - Column name hallucinations (e.g., 'grade' instead of 'grade_avg')
+    """
     if not sql:
         return sql
-    lowered = sql.lower()
-    
-    # Mistake 1: Ordering by 'grade' (school year) instead of 'grade_avg' when it's clearly performance
-    if "order by grade desc" in lowered or "order by grade asc" in lowered or "order by s.grade" in lowered:
-        # Note: robust replacement would use regex, keeping it simple here
-        sql = re.sub(r'(?i)\border by\s+(s\.)?grade\b', r'ORDER BY \1grade_avg', sql)
-        
-    # Mistake 2: "Lowest" but ordered DESC
-    if "lowest" in lowered and "desc" in lowered:
-        # A bit risky to auto-rewrite without full context, but common mistake
-        pass 
-        
+
+    # ── Enum Normalization ──────────────────────────────────────────────
+    # Map every plausible LLM variation → exact DB value.
+    _ENUM_CANONICAL: Dict[str, Dict[str, str]] = {
+        # risk_tier column
+        "risk_tier": {
+            "at-risk": "AT_RISK", "at_risk": "AT_RISK", "atrisk": "AT_RISK",
+            "high": "AT_RISK", "high risk": "AT_RISK", "at risk": "AT_RISK",
+            "safe": "SAFE", "low": "SAFE", "low risk": "SAFE",
+            "watch": "WATCH", "medium": "WATCH", "moderate": "WATCH",
+        },
+        # fees.status column
+        "status": {
+            "overdue": "Overdue", "over due": "Overdue", "over_due": "Overdue",
+            "paid": "Paid", "partial": "Partial", "unpaid": "Unpaid",
+        },
+        # attendance.status column
+        "attendance_status": {
+            "present": "Present", "absent": "Absent", "late": "Late",
+        },
+    }
+
+    def _fix_enum(match: re.Match) -> str:
+        col = match.group("col").strip().lower()
+        quote = match.group("quote")  # ' or "
+        val = match.group("val")
+
+        # Determine which enum map to use based on the column name
+        lookup = None
+        if "risk" in col:
+            lookup = _ENUM_CANONICAL["risk_tier"]
+        elif "status" in col:
+            # Could be fee status or attendance status; fee status is more common in queries
+            lookup = _ENUM_CANONICAL["status"]
+
+        if lookup:
+            normalised = val.strip().lower().replace("-", "").replace("_", "").replace(" ", "")
+            for variant, canonical in lookup.items():
+                if normalised == variant.replace("-", "").replace("_", "").replace(" ", ""):
+                    return f"{match.group('col')}{match.group('op')}{quote}{canonical}{quote}"
+
+        return match.group(0)  # no change
+
+    # Regex: captures  column_name = 'value'  or  column_name IN ('value', ...)
+    sql = re.sub(
+        r"(?P<col>\b\w+(?:\.\w+)?)\s*(?P<op>=|!=|<>|LIKE)\s*(?P<quote>['\"])(?P<val>[^'\"]+)(?P=quote)",
+        _fix_enum,
+        sql,
+        flags=re.IGNORECASE,
+    )
+
+    # Also handle IN (...) clauses: fix each literal inside
+    def _fix_in_clause(match: re.Match) -> str:
+        col = match.group("col").strip().lower()
+        in_body = match.group("body")
+
+        lookup = None
+        if "risk" in col:
+            lookup = _ENUM_CANONICAL["risk_tier"]
+        elif "status" in col:
+            lookup = _ENUM_CANONICAL["status"]
+
+        if not lookup:
+            return match.group(0)
+
+        def _replace_literal(lit_match: re.Match) -> str:
+            quote = lit_match.group(1)
+            val = lit_match.group(2)
+            normalised = val.strip().lower().replace("-", "").replace("_", "").replace(" ", "")
+            for variant, canonical in lookup.items():
+                if normalised == variant.replace("-", "").replace("_", "").replace(" ", ""):
+                    return f"{quote}{canonical}{quote}"
+            return lit_match.group(0)
+
+        fixed_body = re.sub(r"(['\"])([^'\"]+)\1", _replace_literal, in_body)
+        return f"{match.group('col')} IN ({fixed_body})"
+
+    sql = re.sub(
+        r"(?P<col>\b\w+(?:\.\w+)?)\s+IN\s*\((?P<body>[^)]+)\)",
+        _fix_in_clause,
+        sql,
+        flags=re.IGNORECASE,
+    )
+
+    # ── Column Name Fixes ───────────────────────────────────────────────
+    # Only apply in SELECT/WHERE/ORDER BY contexts (not table aliases)
+
+    # Fix: 'grade' used as academic performance → 'grade_avg'
+    # But NOT when it's students.grade (school year) or s.grade
+    # Strategy: if it's in ORDER BY, WHERE with comparison operators, and NOT prefixed by s. or students.
+    sql = re.sub(
+        r'(?<!\w)(?<!s\.)(?<!students\.)(?<!student_summary\.)\bgrade\b(?!_)(?!\s+(?:INT|VARCHAR|=\s*\d))',
+        lambda m: 'grade_avg' if any(kw in sql.lower()[:sql.lower().find(m.group())] for kw in ['order by', 'where', 'having', 'select']) and 'student_summary' in sql.lower() else m.group(),
+        sql
+    )
+
+    # Fix: bare 'attendance' → 'attendance_rate' when used with student_summary
+    sql = re.sub(
+        r'(?<!\w)(?<!\.)\battendance\b(?!_)(?!\s)',
+        lambda m: 'attendance_rate' if 'student_summary' in sql.lower() else m.group(),
+        sql,
+        flags=re.IGNORECASE,
+    )
+
+    return sql
+
+
+async def _schema_validate_enums(session: AsyncSession, sql: str) -> str:
+    """Layer 2: Schema-aware validation. Query the DB for actual enum values
+    and correct any remaining mismatches after the deterministic rewriter.
+
+    Only fires when the SQL references known enum columns.
+    """
+    enum_columns = {
+        "risk_tier": "student_summary",
+        "status": "fees",
+    }
+
+    for col, table in enum_columns.items():
+        # Check if this column appears in the SQL
+        if col not in sql.lower():
+            continue
+
+        try:
+            result = await session.execute(
+                text(f"SELECT DISTINCT {col} FROM {table} LIMIT 20")
+            )
+            actual_values = [str(row[0]) for row in result if row[0] is not None]
+        except Exception:
+            continue
+
+        if not actual_values:
+            continue
+
+        # Build a case-insensitive lookup: normalised → actual
+        actual_map = {}
+        for v in actual_values:
+            key = v.lower().replace("-", "").replace("_", "").replace(" ", "")
+            actual_map[key] = v
+
+        # Find string literals in the SQL that are compared against this column
+        pattern = re.compile(
+            rf"\b{col}\b\s*(?:=|!=|<>|LIKE)\s*['\"]([^'\"]+)['\"]",
+            re.IGNORECASE,
+        )
+        for m in pattern.finditer(sql):
+            found_val = m.group(1)
+            normalised = found_val.lower().replace("-", "").replace("_", "").replace(" ", "")
+            if normalised in actual_map and found_val != actual_map[normalised]:
+                sql = sql.replace(found_val, actual_map[normalised])
+                logger.info("Schema validator fixed enum: '%s' → '%s'", found_val, actual_map[normalised])
+
     return sql
 
 
@@ -310,6 +455,22 @@ async def _format_answer(question: str, sql: str, columns: List[str],
         "4. Do not use markdown tables."
     )
     return await generate_text(prompt, temperature=0.3, max_tokens=512)
+
+
+async def _retry_with_error(question: str, failed_sql: str, error_msg: str, session_history: List[Any] = None) -> Dict[str, Any]:
+    """Layer 3: If execution fails, feed the error back to the LLM for one self-correction attempt."""
+    retry_prompt = (
+        f"{SYSTEM_PROMPT}\n\n"
+        f"User question: {question.strip()}\n\n"
+        f"Your PREVIOUS SQL attempt was:\n{failed_sql}\n\n"
+        f"It FAILED with this error:\n{error_msg}\n\n"
+        "Please fix the SQL and try again. Common issues:\n"
+        "- Wrong enum values (check the schema DDL for exact column types)\n"
+        "- Wrong column names (e.g., 'grade' vs 'grade_avg')\n"
+        "- Missing JOINs\n\n"
+        "Return JSON only."
+    )
+    return await generate_json(retry_prompt)
 
 
 # ---------------------------------------------------------------- public
@@ -367,8 +528,14 @@ async def run_pipeline(session: AsyncSession, question: str, session_history: Li
     if not sql:
         return PipelineResult(answer="I'm sorry, I couldn't generate a query for that. Could you try asking in a different way?", error="no_sql")
 
-    # 3. Post-Generation SQL Rewriter
+    # ── Layer 1: Deterministic SQL Rewriter ──
     sql = _rewrite_sql(sql)
+
+    # ── Layer 2: Schema-Aware Enum Validation ──
+    try:
+        sql = await _schema_validate_enums(session, sql)
+    except Exception as e:
+        logger.warning("Schema enum validation failed (non-fatal): %s", e)
 
     ok, why = _validate_sql(sql)
     if not ok:
@@ -383,13 +550,53 @@ async def run_pipeline(session: AsyncSession, question: str, session_history: Li
     try:
         columns, rows = await _execute_sql(session, sql)
     except Exception as e:
-        return PipelineResult(
-            answer="I'm really sorry, I tried running that query but something went wrong on my end.",
-            sql=sql,
-            confidence=confidence,
-            error=f"execution_failed:{e}",
-            latency_ms=int((time.perf_counter() - started) * 1000),
-        )
+        # ── Layer 3: LLM Self-Correction Retry ──
+        logger.warning("First SQL attempt failed (%s), retrying with error feedback...", e)
+        try:
+            retry_plan = await _retry_with_error(question, sql, str(e), session_history)
+            retry_sql = (retry_plan.get("sql") or "").strip()
+            if retry_sql:
+                retry_sql = _rewrite_sql(retry_sql)
+                try:
+                    retry_sql = await _schema_validate_enums(session, retry_sql)
+                except Exception:
+                    pass
+                ok2, why2 = _validate_sql(retry_sql)
+                if ok2:
+                    try:
+                        columns, rows = await _execute_sql(session, retry_sql)
+                        sql = retry_sql
+                        explanation = retry_plan.get("explanation") or explanation
+                        logger.info("Retry succeeded with corrected SQL.")
+                    except Exception as e2:
+                        return PipelineResult(
+                            answer="I'm really sorry, I tried running that query but something went wrong on my end.",
+                            sql=retry_sql,
+                            confidence=confidence,
+                            error=f"retry_execution_failed:{e2}",
+                            latency_ms=int((time.perf_counter() - started) * 1000),
+                        )
+                else:
+                    return PipelineResult(
+                        answer="I'm sorry, I couldn't generate a valid query for that.",
+                        sql=retry_sql, confidence=confidence,
+                        error=f"retry_validation_failed:{why2}",
+                        latency_ms=int((time.perf_counter() - started) * 1000),
+                    )
+            else:
+                return PipelineResult(
+                    answer="I'm really sorry, I tried running that query but something went wrong on my end.",
+                    sql=sql, confidence=confidence,
+                    error=f"execution_failed:{e}",
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                )
+        except Exception:
+            return PipelineResult(
+                answer="I'm really sorry, I tried running that query but something went wrong on my end.",
+                sql=sql, confidence=confidence,
+                error=f"execution_failed:{e}",
+                latency_ms=int((time.perf_counter() - started) * 1000),
+            )
 
     # 5. Empty-Result Handler
     if not rows:

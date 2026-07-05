@@ -24,17 +24,15 @@ from .llm_client import generate_text
 logger = logging.getLogger("digest")
 
 
-async def _attendance_delta(session: AsyncSession, days: int = 14) -> Dict[str, float]:
-    period_start = date.today() - timedelta(days=days)
-    prior_start = period_start - timedelta(days=days)
+async def _attendance_delta(session: AsyncSession, start: date, end: date, days: int) -> Dict[str, float]:
+    prior_start = start - timedelta(days=days)
     now_avg = (await session.execute(
         select(func.avg(func.if_(Attendance.status == "Present", 1.0, 0.0)))
-        .where(Attendance.date >= period_start)
+        .where(Attendance.date >= start, Attendance.date <= end)
     )).scalar() or 0
     prior_avg = (await session.execute(
         select(func.avg(func.if_(Attendance.status == "Present", 1.0, 0.0)))
-        .where(Attendance.date >= prior_start)
-        .where(Attendance.date < period_start)
+        .where(Attendance.date >= prior_start, Attendance.date < start)
     )).scalar() or 0
     return {
         "now": round(now_avg * 100, 2),
@@ -43,13 +41,13 @@ async def _attendance_delta(session: AsyncSession, days: int = 14) -> Dict[str, 
     }
 
 
-async def _new_at_risk(session: AsyncSession, days: int = 14) -> List[Dict]:
-    cutoff = datetime.utcnow() - timedelta(days=days)
+async def _new_at_risk(session: AsyncSession, start: date, end: date) -> List[Dict]:
     q = (
         select(Student.id, Student.name, Student.grade, Student.section, StudentSummary.risk_score)
         .join(StudentSummary, StudentSummary.student_id == Student.id)
         .where(StudentSummary.risk_tier == RiskTier.AT_RISK)
-        .where(StudentSummary.updated_at >= cutoff)
+        # We can't strictly bound risk by date easily, so we just return the current top 20
+
         .order_by(StudentSummary.risk_score.desc())
         .limit(20)
     )
@@ -61,13 +59,13 @@ async def _new_at_risk(session: AsyncSession, days: int = 14) -> List[Dict]:
     ]
 
 
-async def _fee_summary(session: AsyncSession) -> Dict[str, float]:
+async def _fee_summary(session: AsyncSession, start: date, end: date) -> Dict[str, float]:
     q = select(
         func.coalesce(func.sum(Fee.amount_due), 0).label("due"),
         func.coalesce(func.sum(Fee.amount_paid), 0).label("paid"),
         func.sum(case((Fee.status == FeeStatus.OVERDUE, 1), else_=0)).label("overdue_count"),
         func.sum(case((Fee.status == FeeStatus.PAID, 1), else_=0)).label("paid_count"),
-    )
+    ).where(Fee.due_date >= start, Fee.due_date <= end)
     row = (await session.execute(q)).first()
     if not row:
         return {"due": 0, "paid": 0, "outstanding": 0, "overdue_count": 0, "paid_count": 0}
@@ -98,13 +96,18 @@ async def _narrative(content: Dict) -> str:
         )
 
 
-async def generate_digest(session: AsyncSession, *, days: int = 14) -> Digest:
-    end = date.today()
-    start = end - timedelta(days=days)
+async def generate_digest(session: AsyncSession, *, days: int = 14, start_date: Optional[date] = None, end_date: Optional[date] = None) -> Digest:
+    if start_date and end_date:
+        start = start_date
+        end = end_date
+        days = (end - start).days or 1
+    else:
+        end = date.today()
+        start = end - timedelta(days=days)
 
-    attendance = await _attendance_delta(session, days)
-    new_at_risk = await _new_at_risk(session, days)
-    fees = await _fee_summary(session)
+    attendance = await _attendance_delta(session, start, end, days)
+    new_at_risk = await _new_at_risk(session, start, end)
+    fees = await _fee_summary(session, start, end)
 
     content: Dict = {
         "period": {"start": start.isoformat(), "end": end.isoformat()},
