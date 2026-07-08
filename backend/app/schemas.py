@@ -4,10 +4,20 @@ Kept intentionally lean - one file per concern in larger projects is fine,
 but for an MVP a single module reduces indirection.
 """
 from datetime import date, datetime
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Generic, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator, field_validator
 
+
+# --- Common -----------------------------------------------------------------
+
+T = TypeVar('T')
+
+class PaginatedResponse(BaseModel, Generic[T]):
+    items: List[T]
+    total: int
+    page: int
+    pages: int
 
 # --- Dashboard --------------------------------------------------------------
 
@@ -153,3 +163,167 @@ class GoldenTestOut(BaseModel):
     last_answer: Optional[str] = None
     last_sql: Optional[str] = None
     last_run_at: Optional[datetime] = None
+
+
+# --- Academics -------------------------------------------------------------
+
+class CourseBase(BaseModel):
+    code: str
+    name: str
+    credits: int = Field(default=3, gt=0)
+    department_id: int = Field(gt=0)
+
+class CourseCreate(CourseBase):
+    pass
+
+class CourseOut(CourseBase):
+    id: int
+    class Config:
+        from_attributes = True
+
+class ClassGroupBase(BaseModel):
+    name: str
+    grade: int
+    section: str
+    teacher_id: Optional[int] = None
+
+class ClassGroupCreate(ClassGroupBase):
+    grade: int = Field(ge=9, le=12)
+    section: str = Field(min_length=1, max_length=1, pattern=r"^[A-Ea-e]$")
+
+class ClassGroupOut(ClassGroupBase):
+    id: int
+    teacher_name: Optional[str] = None
+    class Config:
+        from_attributes = True
+
+class TeacherBase(BaseModel):
+    name: str
+    subject: str
+
+class TeacherCreate(TeacherBase):
+    pass
+
+class TeacherOut(TeacherBase):
+    id: int
+    class Config:
+        from_attributes = True
+
+
+# --- Students --------------------------------------------------------------
+
+class StudentBase(BaseModel):
+    name: str
+    grade: int
+    section: str
+    enrollment_date: date
+    parent_contact: str
+    gender: str
+    dob: date
+
+class StudentCreate(StudentBase):
+    grade: int = Field(ge=9, le=12)
+    section: str = Field(min_length=1, max_length=1, pattern=r"^[A-Ea-e]$")
+
+    @field_validator("dob")
+    @classmethod
+    def dob_must_be_past(cls, v: date):
+        if v >= date.today():
+            raise ValueError("Date of birth must be in the past")
+        return v
+
+class StudentOut(StudentBase):
+    id: int
+    attendance_rate: Optional[float] = None
+    grade_avg: Optional[float] = None
+    class Config:
+        from_attributes = True
+
+class SubjectGrade(BaseModel):
+    subject: str
+    average_score: float
+    assessment_count: int
+
+class StudentDetail(StudentOut):
+    grades: List[SubjectGrade] = Field(default_factory=list)
+
+
+# --- Attendance ------------------------------------------------------------
+
+class AttendanceRecordBase(BaseModel):
+    student_id: int
+    status: str
+    period: Optional[int] = None
+
+class AttendanceClassView(BaseModel):
+    student_id: int
+    student_name: str
+    status: Optional[str] = None
+
+class AttendanceBulkCreate(BaseModel):
+    date: date
+    grade: int
+    section: str
+    records: List[AttendanceRecordBase]
+
+class AttendanceOut(BaseModel):
+    id: int
+    student_id: int
+    date: date
+    status: str
+    period: Optional[int] = None
+    class Config:
+        from_attributes = True
+
+# --- Academics Students Tab ------------------------------------------------
+
+class AcademicStudentOut(BaseModel):
+    id: int
+    name: str
+    grade: int
+    section: str
+    attendance_rate: Optional[float] = None
+    grade_avg: Optional[float] = None
+    overdue_fees: int = 0
+    
+    class Config:
+        from_attributes = True
+
+class StudentAssessmentOut(BaseModel):
+    id: int
+    subject: str
+    type: str
+    score: float
+    max_score: float
+    date: date
+    
+    class Config:
+        from_attributes = True
+
+class AssessmentCreate(BaseModel):
+    subject: str
+    type: str
+    score: float = Field(ge=0)
+    max_score: float = Field(default=100.0, gt=0)
+    date: date
+
+    @model_validator(mode='after')
+    def check_score(self) -> 'AssessmentCreate':
+        if self.score > self.max_score:
+            raise ValueError("score cannot be greater than max_score")
+        return self
+
+class AssessmentUpdate(BaseModel):
+    subject: Optional[str] = None
+    type: Optional[str] = None
+    score: Optional[float] = Field(default=None, ge=0)
+    max_score: Optional[float] = Field(default=None, gt=0)
+    date: Optional[date] = None
+
+    @model_validator(mode='after')
+    def check_score(self) -> 'AssessmentUpdate':
+        if self.score is not None and self.max_score is not None:
+            if self.score > self.max_score:
+                raise ValueError("score cannot be greater than max_score")
+        return self
+

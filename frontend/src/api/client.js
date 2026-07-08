@@ -79,4 +79,64 @@ export const api = {
       fetchAPI(`/alerts/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
     scan: () => fetchAPI('/alerts/scan', { method: 'POST' }),
   },
+  academics: {
+    courses: {
+      list: (params = {}) => {
+        const qs = new URLSearchParams(params).toString();
+        return fetchAPI(`/academics/courses${qs ? `?${qs}` : ''}`);
+      },
+      create: (data) => fetchAPI('/academics/courses', { method: 'POST', body: JSON.stringify(data) }),
+      update: (id, data) => fetchAPI(`/academics/courses/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+      delete: (id) => fetchAPI(`/academics/courses/${id}`, { method: 'DELETE' }),
+    },
+    classes: {
+      list: (params = {}) => {
+        const qs = new URLSearchParams(params).toString();
+        return fetchAPI(`/academics/classes${qs ? `?${qs}` : ''}`);
+      },
+      create: (data) => fetchAPI('/academics/classes', { method: 'POST', body: JSON.stringify(data) }),
+      update: (id, data) => fetchAPI(`/academics/classes/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+      delete: (id) => fetchAPI(`/academics/classes/${id}`, { method: 'DELETE' }),
+    },
+    teachers: {
+      list: (params = {}) => {
+        const qs = new URLSearchParams(params).toString();
+        return fetchAPI(`/academics/teachers${qs ? `?${qs}` : ''}`);
+      },
+      create: (data) => fetchAPI('/academics/teachers', { method: 'POST', body: JSON.stringify(data) }),
+      update: (id, data) => fetchAPI(`/academics/teachers/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+      delete: (id) => fetchAPI(`/academics/teachers/${id}`, { method: 'DELETE' }),
+    },
+    students: {
+      list: (params = {}) => {
+        const qs = new URLSearchParams(params).toString();
+        return fetchAPI(`/academics/students${qs ? `?${qs}` : ''}`);
+      },
+      assessments: (studentId) => fetchAPI(`/academics/students/${studentId}/assessments`),
+      createAssessment: (studentId, data) => fetchAPI(`/academics/students/${studentId}/assessments`, { method: 'POST', body: JSON.stringify(data) }),
+    },
+    assessments: {
+      update: (id, data) => fetchAPI(`/academics/assessments/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+      delete: (id) => fetchAPI(`/academics/assessments/${id}`, { method: 'DELETE' }),
+    },
+  },
+  students: {
+    list: (params = {}) => {
+      const qs = new URLSearchParams(params).toString();
+      return fetchAPI(`/students${qs ? `?${qs}` : ''}`);
+    },
+    details: (id) => fetchAPI(`/students/${id}/details`),
+    create: (data) => fetchAPI('/students', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id, data) => fetchAPI(`/students/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    delete: (id) => fetchAPI(`/students/${id}`, { method: 'DELETE' }),
+  },
+  attendance: {
+    classView: (params = {}) => {
+      const qs = new URLSearchParams(params).toString();
+      return fetchAPI(`/attendance/class${qs ? `?${qs}` : ''}`);
+    },
+    bulkSave: (data) => fetchAPI('/attendance/bulk', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id, data) => fetchAPI(`/attendance/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    delete: (id) => fetchAPI(`/attendance/${id}`, { method: 'DELETE' }),
+  },
 };

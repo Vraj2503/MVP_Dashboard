@@ -10,7 +10,7 @@ from .services.cache import init_redis, close_redis
 from .services.llm_client import init_langfuse
 from .scheduler import start_scheduler, stop_scheduler
 
-from .routers import dashboard, chat, digest, observability, alerts
+from .routers import dashboard, chat, digest, observability, alerts, academics, students, attendance
 
 settings = get_settings()
 logger = logging.getLogger("app")
@@ -57,7 +57,9 @@ app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(digest.router, prefix="/api/digests", tags=["digests"])
 app.include_router(observability.router, prefix="/api/observability", tags=["observability"])
 app.include_router(alerts.router, prefix="/api/alerts", tags=["alerts"])
-
+app.include_router(academics.router, prefix="/api/academics", tags=["academics"])
+app.include_router(students.router, prefix="/api/students", tags=["students"])
+app.include_router(attendance.router, prefix="/api/attendance", tags=["attendance"])
 
 @app.get("/")
 async def root():

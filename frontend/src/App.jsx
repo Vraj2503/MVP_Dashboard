@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Sparkles, Activity, Bell, FileText, ActivitySquare } from 'lucide-react';
+import { LayoutDashboard, Sparkles, Activity, Bell, FileText, ActivitySquare, GraduationCap, Users, ClipboardCheck } from 'lucide-react';
 
 import StaticDashboard from './components/StaticDashboard';
 import AIAssistedDashboard from './components/AIAssistedDashboard';
@@ -8,6 +8,9 @@ import Chatbot from './components/Chatbot';
 import Digests from './pages/Digests';
 import Observability from './pages/Observability';
 import Alerts from './pages/Alerts';
+import ManageAcademics from './pages/ManageAcademics';
+import ManageStudents from './pages/ManageStudents';
+import ManageAttendance from './pages/ManageAttendance';
 import { api } from './api/client';
 
 function Navigation() {
@@ -28,7 +31,7 @@ function Navigation() {
     return () => clearInterval(interval);
   }, []);
   
-  const navItems = [
+  const dashboardNavItems = [
     { path: '/', label: 'Overview', icon: LayoutDashboard },
     { path: '/ai-assisted', label: 'Adaptive Hub', icon: Sparkles },
     { path: '/alerts', label: 'Alerts', icon: Bell, badge: unreadCount },
@@ -36,26 +39,36 @@ function Navigation() {
     { path: '/observability', label: 'Observability', icon: ActivitySquare },
   ];
 
+  const managementNavItems = [
+    { path: '/academics', label: 'Academics', icon: GraduationCap },
+    { path: '/students', label: 'Students', icon: Users },
+    { path: '/attendance', label: 'Attendance', icon: ClipboardCheck },
+  ];
+
+  const renderNavItem = (item) => {
+    const Icon = item.icon;
+    return (
+      <Link 
+        key={item.path}
+        to={item.path} 
+        className={`nav-link ${location.pathname === item.path ? 'active' : ''}`}
+      >
+        <span style={{ position: 'relative', display: 'inline-flex' }}>
+          <Icon size={20} />
+          {item.badge > 0 && (
+            <span className="nav-badge">{item.badge > 99 ? '99+' : item.badge}</span>
+          )}
+        </span>
+        {item.label}
+      </Link>
+    );
+  };
+
   return (
     <nav className="sidebar-nav">
-      {navItems.map((item) => {
-        const Icon = item.icon;
-        return (
-          <Link 
-            key={item.path}
-            to={item.path} 
-            className={`nav-link ${location.pathname === item.path ? 'active' : ''}`}
-          >
-            <span style={{ position: 'relative', display: 'inline-flex' }}>
-              <Icon size={20} />
-              {item.badge > 0 && (
-                <span className="nav-badge">{item.badge > 99 ? '99+' : item.badge}</span>
-              )}
-            </span>
-            {item.label}
-          </Link>
-        );
-      })}
+      {dashboardNavItems.map(renderNavItem)}
+      <div className="nav-section-label">Management</div>
+      {managementNavItems.map(renderNavItem)}
     </nav>
   );
 }
@@ -96,6 +109,9 @@ function App() {
             <Route path="/alerts" element={<Alerts />} />
             <Route path="/digests" element={<Digests />} />
             <Route path="/observability" element={<Observability />} />
+            <Route path="/academics" element={<ManageAcademics />} />
+            <Route path="/students" element={<ManageStudents />} />
+            <Route path="/attendance" element={<ManageAttendance />} />
           </Routes>
         </main>
 
