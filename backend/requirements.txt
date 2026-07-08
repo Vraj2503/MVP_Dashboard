@@ -5,6 +5,7 @@ pydantic-settings
 SQLAlchemy
 aiomysql
 PyMySQL
+cryptography
 greenlet
 redis
 APScheduler
