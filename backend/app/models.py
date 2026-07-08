@@ -196,11 +196,10 @@ class Payment(Base):
     __tablename__ = "payments"
 
     id = Column(Integer, primary_key=True, index=True)
-    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
-    invoice_id = Column(Integer, ForeignKey("fee_invoices.id"), nullable=True, index=True)
-    amount = Column(Float, nullable=False)
-    date = Column(Date, nullable=False, index=True)
-    method = Column(String(40), nullable=False) # e.g., Credit Card, Cash
+    invoice_id = Column(Integer, ForeignKey("fee_invoices.id"), nullable=False, index=True)
+    amount_paid = Column(Float, nullable=False)
+    payment_date = Column(DateTime, nullable=True, index=True)
+    method = Column(String(50), nullable=True) # e.g., Credit Card, Cash
 
 
 class BehaviorNote(Base):

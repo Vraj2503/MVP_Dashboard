@@ -35,71 +35,40 @@ logger = logging.getLogger("nl2sql")
 MAX_ROWS = 200          # hard cap on rows returned to LLM
 SQL_TIMEOUT_MS = 3000   # statement-level safety
 
-SCHEMA_DDL = """
-CREATE TABLE students (
-  id INT, name VARCHAR(160), grade INT, section VARCHAR(8),
-  enrollment_date DATE, parent_contact VARCHAR(40), gender VARCHAR(8), dob DATE
-);
-CREATE TABLE teachers (id INT, name VARCHAR(120), subject VARCHAR(80));
-CREATE TABLE classes (id INT, name VARCHAR(80), grade INT, section VARCHAR(8), teacher_id INT);
-CREATE TABLE courses (
-  id INT, department_id INT, code VARCHAR(20), name VARCHAR(120), credits INT
-);
-CREATE TABLE users (
-  id INT, username VARCHAR(80), email VARCHAR(120), role VARCHAR(40)
-);
-CREATE TABLE attendance (
-  id INT, student_id INT, date DATE, status VARCHAR(16), period INT
-);
-CREATE TABLE assessments (
-  id INT, student_id INT, subject VARCHAR(60), type VARCHAR(40),
-  score FLOAT, max_score FLOAT, date DATE
-);
-CREATE TABLE assignments (
-  id INT, student_id INT, title VARCHAR(160), submitted BOOL, on_time BOOL,
-  score FLOAT, due_date DATE
-);
-CREATE TABLE fees (
-  id INT, student_id INT, term VARCHAR(40), amount_due FLOAT, amount_paid FLOAT,
-  due_date DATE, status VARCHAR(16)
-);
-CREATE TABLE fee_invoices (
-  id INT, student_id INT, term VARCHAR(40), amount FLOAT, due_date DATE, status VARCHAR(20)
-);
-CREATE TABLE payments (
-  id INT, student_id INT, invoice_id INT, amount FLOAT, date DATE, method VARCHAR(40)
-);
-CREATE TABLE behavior_notes (
-  id INT, student_id INT, teacher_id INT, note TEXT, severity VARCHAR(16), date DATE
-);
-CREATE TABLE student_summary (
-  student_id INT, attendance_rate FLOAT, grade_avg FLOAT,
-  assignment_miss_rate FLOAT, fee_overdue_factor FLOAT,
-  risk_score FLOAT, risk_tier VARCHAR(8), updated_at DATETIME
-);
-CREATE TABLE alerts (
-  id INT, type VARCHAR(80), student_id INT, severity VARCHAR(16),
-  message TEXT, suggested_action TEXT, status VARCHAR(16), created_at DATETIME
-);
-CREATE TABLE digests (
-  id INT, period_start DATE, period_end DATE, content_json TEXT, created_at DATETIME
-);
-CREATE TABLE chat_logs (
-  id INT, user_id VARCHAR(80), question TEXT, generated_sql TEXT,
-  result_json TEXT, feedback INT, latency_ms INT, tokens INT,
-  success BOOL, error TEXT, timestamp DATETIME
-);
-"""
+_cached_schema_ddl = ""
 
+async def load_schema_ddl(engine) -> None:
+    global _cached_schema_ddl
+    ddl_parts = []
+    try:
+        async with engine.connect() as conn:
+            for table in settings.allowed_tables_list:
+                try:
+                    result = await conn.execute(text(f"SHOW CREATE TABLE {table}"))
+                    row = result.fetchone()
+                    if row:
+                        create_stmt = row[1]
+                        # simplify the DDL for the LLM to save tokens
+                        create_stmt = re.sub(r' ENGINE=.*', ';', create_stmt)
+                        create_stmt = re.sub(r' AUTO_INCREMENT=\d+', '', create_stmt)
+                        ddl_parts.append(create_stmt)
+                except Exception as e:
+                    logger.warning(f"Could not load schema for {table}: {e}")
+        _cached_schema_ddl = "\n".join(ddl_parts)
+        logger.info("Schema DDL auto-synced from DB successfully.")
+    except Exception as e:
+        logger.error(f"Failed to auto-sync schema DDL: {e}")
 
-SYSTEM_PROMPT = f"""You are a friendly and expert SQL generator for a school management dashboard.
+def get_system_prompt() -> str:
+    schema_ddl = _cached_schema_ddl or "Schema not loaded."
+    return f"""You are a friendly and expert SQL generator for a school management dashboard.
 The user can ONLY ask read-only questions; never generate writes.
 
 Allowed tables (use these exact names):
 {", ".join(t for t in settings.allowed_tables_list)}
 
 Database schema (MySQL 8):
-{SCHEMA_DDL}
+{schema_ddl}
 
 Return STRICT JSON. The single allowed shape is:
 {{
@@ -130,7 +99,7 @@ Q: "Fee defaulters in grade 10"
 SQL: SELECT s.name, f.amount_due, f.amount_paid, f.status FROM students s JOIN fees f ON s.id = f.student_id WHERE s.grade = 10 AND f.status = 'Overdue'
 
 Q: "Show me all payments made by cash"
-SQL: SELECT p.id, p.amount, p.date, s.name FROM payments p JOIN students s ON p.student_id = s.id WHERE p.method = 'Cash'
+SQL: SELECT p.id, p.amount_paid, p.payment_date, s.name FROM payments p JOIN fee_invoices fi ON p.invoice_id = fi.id JOIN students s ON fi.student_id = s.id WHERE p.method = 'Cash'
 
 Q: "List all courses with 4 credits"
 SQL: SELECT name, code FROM courses WHERE credits = 4
@@ -262,7 +231,7 @@ async def _generate_sql(question: str, session_history: List[Any] = None) -> Dic
                 history_prompt += f"System: {log.result_json}\n"
         history_prompt += "\nUse this context to resolve pronouns or implied constraints in the new question."
 
-    prompt = f"{SYSTEM_PROMPT}{history_prompt}\n\nUser question: {question.strip()}\nReturn JSON only."
+    prompt = f"{get_system_prompt()}{history_prompt}\n\nUser question: {question.strip()}\nReturn JSON only."
     return await generate_json(prompt)
 
 
@@ -478,7 +447,7 @@ async def _format_answer(question: str, sql: str, columns: List[str],
 async def _retry_with_error(question: str, failed_sql: str, error_msg: str, session_history: List[Any] = None) -> Dict[str, Any]:
     """Layer 3: If execution fails, feed the error back to the LLM for one self-correction attempt."""
     retry_prompt = (
-        f"{SYSTEM_PROMPT}\n\n"
+        f"{get_system_prompt()}\n\n"
         f"User question: {question.strip()}\n\n"
         f"Your PREVIOUS SQL attempt was:\n{failed_sql}\n\n"
         f"It FAILED with this error:\n{error_msg}\n\n"

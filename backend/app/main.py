@@ -16,11 +16,16 @@ settings = get_settings()
 logger = logging.getLogger("app")
 
 
+from .services.nl2sql import load_schema_ddl
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Init DB schema if it doesn't exist (relies on models being imported)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        
+    # Auto-sync NL2SQL schema DDL from the database
+    await load_schema_ddl(engine)
     
     # Init external services
     await init_redis()
