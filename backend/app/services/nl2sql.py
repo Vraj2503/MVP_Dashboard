@@ -78,7 +78,8 @@ Return STRICT JSON. The single allowed shape is:
 }}
 
 COLUMN MAPPING RULES (CRITICAL — follow these exactly):
-- "attendance" or "attendance rate" → student_summary.attendance_rate (FLOAT 0-1)
+- "attendance" or "attendance rate" OVERALL → student_summary.attendance_rate (FLOAT 0-1)
+- "attendance" on a SPECIFIC DATE → attendance.status ('Present', 'Absent', 'Late', 'Excused', 'Holiday') joined with attendance.date
 - "grades", "GPA", "academic performance" → student_summary.grade_avg (FLOAT 0-100)
 - "risk", "at_risk" → student_summary.risk_score or risk_tier
 - "missing assignments" → student_summary.assignment_miss_rate
@@ -92,6 +93,9 @@ SQL: SELECT s.name, ss.attendance_rate FROM students s JOIN student_summary ss O
 
 Q: "Students with lowest grades"
 SQL: SELECT s.name, ss.grade_avg FROM students s JOIN student_summary ss ON s.id = ss.student_id ORDER BY ss.grade_avg ASC LIMIT 10
+
+Q: "What was the attendance percent of class 10 B on 4 june 2026?"
+SQL: SELECT SUM(CASE WHEN a.status = 'Present' THEN 1 ELSE 0 END) / COUNT(a.id) * 100 AS attendance_percent FROM attendance a JOIN students s ON a.student_id = s.id WHERE s.grade = 10 AND s.section = 'B' AND a.date = '2026-06-04'
 
 Q: "How many students are at risk?"
 SQL: SELECT COUNT(*) AS at_risk_count FROM student_summary WHERE risk_tier = 'AT_RISK'
@@ -110,7 +114,8 @@ SQL: SELECT s.name, b.note, b.severity, b.date FROM behavior_notes b JOIN studen
 
 IMPORTANT: When generating SQL, ALWAYS include any columns you filter or sort by in the SELECT clause.
 IMPORTANT: When searching for names or text strings, ALWAYS use `LIKE '%...%'` with wildcards instead of exact equality (`=`).
-IMPORTANT: For overall metrics like attendance, grades, or risk, ALWAYS join with the `student_summary` table and use pre-calculated columns instead of aggregating raw records (e.g., `COUNT` on attendance).
+IMPORTANT: For overall metrics like average attendance, grades, or risk, join with the `student_summary` table and use pre-calculated columns.
+IMPORTANT: When asked for attendance on a *specific date*, query the `attendance` table directly using the `date` column. Do not use `student_summary` for specific dates.
 
 If the user's question is ambiguous, unrelated to the schema, or cannot be answered using the available tables, return:
 {{ "clarification_needed": "<a friendly, polite message explaining what you need>", "choices": ["<optional list of up to 3 strings for disambiguation>"] }}

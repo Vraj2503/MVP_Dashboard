@@ -1,8 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { Save, Users, Clock, AlertCircle, CheckCircle } from 'lucide-react';
 import { api } from '../api/client';
+import StudentCalendarView from '../components/StudentCalendarView';
+import ClassCalendarView from '../components/ClassCalendarView';
 
 export default function ManageAttendance() {
+  const [activeTab, setActiveTab] = useState('daily');
   const [grade, setGrade] = useState('');
   const [section, setSection] = useState('');
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
@@ -89,12 +92,30 @@ export default function ManageAttendance() {
     }
   };
 
+  const handleMarkAllPresent = () => {
+    const newState = { ...attendanceState };
+    students.forEach(s => {
+      newState[s.student_id] = 'Present';
+    });
+    setAttendanceState(newState);
+  };
+
+  const handleMarkDateAsHoliday = () => {
+    const newState = { ...attendanceState };
+    students.forEach(s => {
+      newState[s.student_id] = 'Holiday';
+    });
+    setAttendanceState(newState);
+  };
+
   // Compute summary stats
   const stats = {
     present: Object.values(attendanceState).filter(s => s === 'Present').length,
     absent: Object.values(attendanceState).filter(s => s === 'Absent').length,
     total: students.length
   };
+
+  const isHolidayDay = students.length > 0 && Object.keys(attendanceState).length > 0 && students.every(s => attendanceState[s.student_id] === 'Holiday');
 
   const availableGrades = [...new Set(availableClasses.map(c => c.grade))].sort((a, b) => a - b);
   const availableSections = grade 
@@ -110,7 +131,30 @@ export default function ManageAttendance() {
         </div>
       </div>
 
-      <div className="card" style={{ marginBottom: '24px' }}>
+      <div className="attendance-tabs">
+        <button 
+          className={`attendance-tab ${activeTab === 'daily' ? 'active' : ''}`}
+          onClick={() => setActiveTab('daily')}
+        >
+          Daily View
+        </button>
+        <button 
+          className={`attendance-tab ${activeTab === 'student' ? 'active' : ''}`}
+          onClick={() => setActiveTab('student')}
+        >
+          Student Calendar
+        </button>
+        <button 
+          className={`attendance-tab ${activeTab === 'class' ? 'active' : ''}`}
+          onClick={() => setActiveTab('class')}
+        >
+          Class Calendar
+        </button>
+      </div>
+
+      {activeTab === 'daily' && (
+        <>
+          <div className="card" style={{ marginBottom: '24px' }}>
         <div className="search-filter-bar" style={{ marginBottom: 0 }}>
           <div>
             <label className="form-label">Grade</label>
@@ -159,18 +203,52 @@ export default function ManageAttendance() {
               <span>Absent: {stats.absent}</span>
             </div>
           </div>
-          <button 
-            className="btn btn-primary" 
-            onClick={handleSaveAll}
-            disabled={saving || stats.total === 0}
-          >
-            <Save size={18} />
-            {saving ? 'Saving...' : 'Save Attendance'}
-          </button>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button 
+              className="btn btn-secondary btn-sm" 
+              onClick={handleMarkAllPresent}
+              disabled={stats.total === 0}
+            >
+              <CheckCircle size={16} />
+              Mark All Present
+            </button>
+            <button 
+              className="btn btn-secondary btn-sm" 
+              onClick={handleMarkDateAsHoliday}
+              disabled={stats.total === 0}
+            >
+              <Clock size={16} />
+              Mark as Holiday
+            </button>
+            <button 
+              className="btn btn-primary" 
+              onClick={handleSaveAll}
+              disabled={saving || stats.total === 0}
+            >
+              <Save size={18} />
+              {saving ? 'Saving...' : 'Save Attendance'}
+            </button>
+          </div>
         </div>
       )}
 
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+        {isHolidayDay && (
+          <div style={{
+            backgroundColor: 'var(--brand-softer)',
+            color: 'var(--brand-strong)',
+            padding: '16px',
+            margin: '24px 24px 0 24px',
+            borderRadius: 'var(--radius-base)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+            border: '1px solid var(--border-brand-subtle)'
+          }}>
+            <Clock size={20} />
+            <span style={{ fontWeight: 500 }}>This date is marked as a Holiday. Students are not required to attend.</span>
+          </div>
+        )}
         <div style={{ padding: '24px', overflowX: 'auto' }}>
           <table>
             <thead>
@@ -195,12 +273,16 @@ export default function ManageAttendance() {
                         <button 
                           className={`status-toggle present ${attendanceState[student.student_id] === 'Present' ? 'active' : ''}`}
                           onClick={() => handleStatusChange(student.student_id, 'Present')}
+                          disabled={isHolidayDay}
+                          style={isHolidayDay ? { opacity: 0.5, cursor: 'not-allowed' } : {}}
                         >
                           Present
                         </button>
                         <button 
                           className={`status-toggle absent ${attendanceState[student.student_id] === 'Absent' ? 'active' : ''}`}
                           onClick={() => handleStatusChange(student.student_id, 'Absent')}
+                          disabled={isHolidayDay}
+                          style={isHolidayDay ? { opacity: 0.5, cursor: 'not-allowed' } : {}}
                         >
                           Absent
                         </button>
@@ -219,6 +301,11 @@ export default function ManageAttendance() {
           </table>
         </div>
       </div>
+      </>
+      )}
+
+      {activeTab === 'student' && <StudentCalendarView />}
+      {activeTab === 'class' && <ClassCalendarView />}
     </div>
   );
 }

@@ -125,6 +125,7 @@ export const api = {
       const qs = new URLSearchParams(params).toString();
       return fetchAPI(`/students${qs ? `?${qs}` : ''}`);
     },
+    search: (query) => fetchAPI(`/students?search=${encodeURIComponent(query)}&limit=10`),
     details: (id) => fetchAPI(`/students/${id}/details`),
     create: (data) => fetchAPI('/students', { method: 'POST', body: JSON.stringify(data) }),
     update: (id, data) => fetchAPI(`/students/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
@@ -134,6 +135,14 @@ export const api = {
     classView: (params = {}) => {
       const qs = new URLSearchParams(params).toString();
       return fetchAPI(`/attendance/class${qs ? `?${qs}` : ''}`);
+    },
+    studentCalendar: (params = {}) => {
+      const qs = new URLSearchParams(params).toString();
+      return fetchAPI(`/attendance/student-calendar${qs ? `?${qs}` : ''}`);
+    },
+    classCalendar: (params = {}) => {
+      const qs = new URLSearchParams(params).toString();
+      return fetchAPI(`/attendance/class-calendar${qs ? `?${qs}` : ''}`);
     },
     bulkSave: (data) => fetchAPI('/attendance/bulk', { method: 'POST', body: JSON.stringify(data) }),
     update: (id, data) => fetchAPI(`/attendance/${id}`, { method: 'PUT', body: JSON.stringify(data) }),

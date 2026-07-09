@@ -275,6 +275,17 @@ class AttendanceOut(BaseModel):
     class Config:
         from_attributes = True
 
+class StudentCalendarDay(BaseModel):
+    date: date
+    status: str
+
+class ClassCalendarDay(BaseModel):
+    date: date
+    total: int
+    present: int
+    percentage: float
+    is_holiday: bool
+
 # --- Academics Students Tab ------------------------------------------------
 
 class AcademicStudentOut(BaseModel):

@@ -7,7 +7,8 @@ from typing import List, Optional
 
 from ..db import get_db
 from ..models import Student, Attendance, StudentSummary
-from ..schemas import AttendanceClassView, AttendanceBulkCreate, AttendanceOut
+from ..schemas import AttendanceClassView, AttendanceBulkCreate, AttendanceOut, StudentCalendarDay, ClassCalendarDay
+import calendar
 
 async def recompute_attendance_rates(db: AsyncSession, student_ids: List[int]):
     if not student_ids:
@@ -15,7 +16,7 @@ async def recompute_attendance_rates(db: AsyncSession, student_ids: List[int]):
         
     att_stats_q = select(
         Attendance.student_id,
-        func.count(Attendance.id).label("total_days"),
+        func.sum(case((Attendance.status.in_(["Present", "Absent", "Late"]), 1), else_=0)).label("total_days"),
         func.sum(case((Attendance.status == "Present", 1), else_=0)).label("present_days")
     ).where(Attendance.student_id.in_(student_ids)).group_by(Attendance.student_id)
     
@@ -142,3 +143,81 @@ async def delete_attendance(attendance_id: int, db: AsyncSession = Depends(get_d
     await db.commit()
     await recompute_attendance_rates(db, [student_id])
     return {"message": "Attendance record deleted"}
+
+@router.get("/student-calendar", response_model=List[StudentCalendarDay])
+async def get_student_calendar(
+    student_id: int,
+    year: int,
+    month: int,
+    db: AsyncSession = Depends(get_db)
+):
+    start_date = datetime.date(year, month, 1)
+    end_date = datetime.date(year, month, calendar.monthrange(year, month)[1])
+    
+    q = select(Attendance).where(
+        and_(
+            Attendance.student_id == student_id,
+            Attendance.date >= start_date,
+            Attendance.date <= end_date
+        )
+    ).order_by(Attendance.date)
+    records = (await db.execute(q)).scalars().all()
+    
+    return [
+        StudentCalendarDay(date=r.date, status=r.status)
+        for r in records
+    ]
+
+@router.get("/class-calendar", response_model=List[ClassCalendarDay])
+async def get_class_calendar(
+    grade: int,
+    section: str,
+    year: int,
+    month: int,
+    db: AsyncSession = Depends(get_db)
+):
+    start_date = datetime.date(year, month, 1)
+    end_date = datetime.date(year, month, calendar.monthrange(year, month)[1])
+    
+    # get students in class
+    student_q = select(Student.id).where(
+        and_(Student.grade == grade, Student.section == section)
+    )
+    student_ids = (await db.execute(student_q)).scalars().all()
+    if not student_ids:
+        return []
+        
+    q = select(
+        Attendance.date,
+        func.count(Attendance.id).label("total"),
+        func.sum(case((Attendance.status == 'Present', 1), else_=0)).label("present"),
+        func.sum(case((Attendance.status == 'Holiday', 1), else_=0)).label("holiday")
+    ).where(
+        and_(
+            Attendance.student_id.in_(student_ids),
+            Attendance.date >= start_date,
+            Attendance.date <= end_date
+        )
+    ).group_by(Attendance.date).order_by(Attendance.date)
+    
+    records = (await db.execute(q)).all()
+    
+    out = []
+    for r in records:
+        total = int(r.total)
+        present = int(r.present or 0)
+        holiday_count = int(r.holiday or 0)
+        
+        is_holiday = (holiday_count == total and total > 0)
+        
+        # If it's a holiday, we can say percentage is 0 but it won't matter visually
+        percentage = (present / total * 100) if total > 0 and not is_holiday else 0.0
+        
+        out.append(ClassCalendarDay(
+            date=r.date,
+            total=total,
+            present=present,
+            percentage=round(percentage, 1),
+            is_holiday=is_holiday
+        ))
+    return out
