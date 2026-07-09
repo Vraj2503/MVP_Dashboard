@@ -83,6 +83,7 @@ COLUMN MAPPING RULES (CRITICAL — follow these exactly):
 - "risk", "at_risk" → student_summary.risk_score or risk_tier
 - "missing assignments" → student_summary.assignment_miss_rate
 - "fee", "overdue" → student_summary.fee_overdue_factor or fees table
+- "unpaid", "unpaid fees", "not paid" → fees.status = 'OVERDUE'
 - "grade" (as in school year, e.g., "grade 10") → students.grade (INT)
 
 FEW-SHOT EXAMPLES:
@@ -268,8 +269,9 @@ def _rewrite_sql(sql: str) -> str:
         },
         # fees.status column
         "status": {
-            "overdue": "Overdue", "over due": "Overdue", "over_due": "Overdue",
-            "paid": "Paid", "partial": "Partial", "unpaid": "Unpaid",
+            "overdue": "OVERDUE", "over due": "OVERDUE", "over_due": "OVERDUE",
+            "unpaid": "OVERDUE", "not paid": "OVERDUE",
+            "paid": "PAID", "partial": "PARTIAL",
         },
         # attendance.status column
         "attendance_status": {
