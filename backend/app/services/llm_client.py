@@ -83,7 +83,7 @@ async def generate_text(prompt: str, *, temperature: float = 0.4, max_tokens: in
     return out
 
 
-async def generate_json(prompt: str, *, temperature: float = 0.2, max_tokens: int = 2048) -> Dict[str, Any]:
+async def generate_json(prompt: str, *, temperature: float = 0.2, max_tokens: int = 512) -> Dict[str, Any]:
     """Generate JSON explicitly.
 
     Falls back to extracting a JSON object from a fenced code block if needed.

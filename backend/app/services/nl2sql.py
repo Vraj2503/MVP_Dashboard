@@ -70,6 +70,17 @@ Allowed tables (use these exact names):
 Database schema (MySQL 8):
 {schema_ddl}
 
+SCHEMA ANNOTATIONS (read before generating SQL):
+- students: name (full name), grade (school year 9-12 NOT academic score), section (A-E), gender, dob, parent_contact
+- attendance: student_id, date, status, period. NO class_id column. Filter by grade/section via students table.
+- attendance.status exact values: 'Present', 'Absent', 'Late', 'Excused', 'Holiday'
+- assessments: student_id, subject, type (Quiz|Midterm|Final|Project), score, max_score, date
+- assignments: student_id, title, submitted (bool), on_time (bool), score, due_date
+- fees: student_id, term, amount_due, amount_paid, due_date, status ENUM (Paid|Partial|Unpaid|Overdue)
+- student_summary: pre-computed per-student stats. attendance_rate (float 0-1), grade_avg (0-100), risk_score, risk_tier (Safe|Watch|At-Risk)
+- classes: id, name, grade, section, teacher_id. teachers: id, name, subject.
+- To find a student's class, JOIN classes ON students.grade = classes.grade AND students.section = classes.section. (Do NOT join on id)
+
 Return STRICT JSON. The single allowed shape is:
 {{
   "sql": "<a single SELECT statement; no trailing semicolon>",
@@ -87,7 +98,21 @@ COLUMN MAPPING RULES (CRITICAL — follow these exactly):
 - "unpaid", "unpaid fees", "not paid" → fees.status = 'OVERDUE'
 - "grade" (as in school year, e.g., "grade 10") → students.grade (INT)
 
+BUSINESS TERM → SQL PATTERN RULES (follow exactly):
+- "attendance rate/%" from raw data = SUM(CASE WHEN a.status='Present' THEN 1.0 ELSE 0.0 END)/COUNT(a.id)*100
+- "100%/perfect attendance" = GROUP BY student HAVING SUM(CASE WHEN status!='Present' THEN 1 ELSE 0 END)=0 AND COUNT(id)>=1
+- "never absent" = NOT EXISTS (SELECT 1 FROM attendance WHERE student_id=s.id AND status='Absent')
+- "weighted average" = SUM(score)/SUM(max_score)*100, NOT AVG(score/max_score)*100
+- "no X" or "zero Y" = LEFT JOIN + IS NULL or NOT EXISTS. NEVER INNER JOIN for missing-data queries.
+- "more X than Y" (statuses) = HAVING SUM(CASE WHEN status='X' THEN 1 ELSE 0 END) > SUM(CASE WHEN status='Y' THEN 1 ELSE 0 END)
+- "days" (e.g., "how many days") = COUNT(DISTINCT date), NOT COUNT(id)
+- Always use 1.0 in CASE for division to prevent integer truncation.
+- Row filters → WHERE. Aggregate filters → HAVING.
+
 FEW-SHOT EXAMPLES:
+Q: "What class is Adam Sellers in?"
+SQL: SELECT c.name FROM students s JOIN classes c ON s.grade = c.grade AND s.section = c.section WHERE s.name LIKE '%Adam Sellers%'
+
 Q: "Top 10 students with highest attendance"
 SQL: SELECT s.name, ss.attendance_rate FROM students s JOIN student_summary ss ON s.id = ss.student_id ORDER BY ss.attendance_rate DESC LIMIT 10
 
@@ -97,20 +122,47 @@ SQL: SELECT s.name, ss.grade_avg FROM students s JOIN student_summary ss ON s.id
 Q: "What was the attendance percent of class 10 B on 4 june 2026?"
 SQL: SELECT SUM(CASE WHEN a.status = 'Present' THEN 1 ELSE 0 END) / COUNT(a.id) * 100 AS attendance_percent FROM attendance a JOIN students s ON a.student_id = s.id WHERE s.grade = 10 AND s.section = 'B' AND a.date = '2026-06-04'
 
-Q: "How many students are at risk?"
-SQL: SELECT COUNT(*) AS at_risk_count FROM student_summary WHERE risk_tier = 'AT_RISK'
-
 Q: "Fee defaulters in grade 10"
 SQL: SELECT s.name, f.amount_due, f.amount_paid, f.status FROM students s JOIN fees f ON s.id = f.student_id WHERE s.grade = 10 AND f.status = 'Overdue'
 
-Q: "Show me all payments made by cash"
-SQL: SELECT p.id, p.amount_paid, p.payment_date, s.name FROM payments p JOIN fee_invoices fi ON p.invoice_id = fi.id JOIN students s ON fi.student_id = s.id WHERE p.method = 'Cash'
+Q: "What is the attendance percentage for grade 10?"
+SQL: SELECT SUM(CASE WHEN a.status = 'Present' THEN 1.0 ELSE 0.0 END) / COUNT(a.id) * 100 AS attendance_pct FROM attendance a JOIN students s ON a.student_id = s.id WHERE s.grade = 10
 
-Q: "List all courses with 4 credits"
-SQL: SELECT name, code FROM courses WHERE credits = 4
+Q: "List students with 100% attendance who have at least 3 attendance records"
+SQL: SELECT s.name FROM students s JOIN attendance a ON s.id = a.student_id GROUP BY s.id, s.name HAVING COUNT(a.id) >= 3 AND SUM(CASE WHEN a.status != 'Present' THEN 1 ELSE 0 END) = 0
 
-Q: "Show me recent behavior notes for John"
-SQL: SELECT s.name, b.note, b.severity, b.date FROM behavior_notes b JOIN students s ON b.student_id = s.id WHERE s.name LIKE '%John%' ORDER BY b.date DESC LIMIT 5
+Q: "Students who have never been absent"
+SQL: SELECT s.name FROM students s WHERE NOT EXISTS (SELECT 1 FROM attendance a WHERE a.student_id = s.id AND a.status = 'Absent')
+
+Q: "How many students were absent on 4 June 2026?"
+SQL: SELECT COUNT(DISTINCT a.student_id) AS absent_count FROM attendance a WHERE a.date = '2026-06-04' AND a.status = 'Absent'
+
+Q: "Students with more absences than present days"
+SQL: SELECT s.name, SUM(CASE WHEN a.status = 'Absent' THEN 1 ELSE 0 END) AS absences, SUM(CASE WHEN a.status = 'Present' THEN 1 ELSE 0 END) AS presents FROM students s JOIN attendance a ON s.id = a.student_id GROUP BY s.id, s.name HAVING SUM(CASE WHEN a.status = 'Absent' THEN 1 ELSE 0 END) > SUM(CASE WHEN a.status = 'Present' THEN 1 ELSE 0 END)
+
+Q: "Overall percentage score for John in Math"
+SQL: SELECT s.name, SUM(a.score) / SUM(a.max_score) * 100 AS weighted_avg FROM students s JOIN assessments a ON s.id = a.student_id WHERE s.name LIKE '%John%' AND a.subject LIKE '%Math%' GROUP BY s.id, s.name
+
+Q: "Top 3 students by grade average in each grade level"
+SQL: SELECT name, grade, grade_avg FROM (SELECT s.name, s.grade, ss.grade_avg, ROW_NUMBER() OVER (PARTITION BY s.grade ORDER BY ss.grade_avg DESC) AS rn FROM students s JOIN student_summary ss ON s.id = ss.student_id) ranked WHERE rn <= 3
+
+Q: "At-risk students with attendance below 70% and overdue fees"
+SQL: SELECT s.name, ss.attendance_rate, ss.risk_tier, f.status FROM students s JOIN student_summary ss ON s.id = ss.student_id JOIN fees f ON s.id = f.student_id WHERE ss.risk_tier = 'At-Risk' AND ss.attendance_rate < 0.70 AND f.status = 'Overdue'
+
+Q: "Students with attendance rate above school average"
+SQL: SELECT s.name, ss.attendance_rate FROM students s JOIN student_summary ss ON s.id = ss.student_id WHERE ss.attendance_rate > (SELECT AVG(attendance_rate) FROM student_summary)
+
+Q: "Daily attendance trend for grade 10 in last 30 days"
+SQL: SELECT a.date, SUM(CASE WHEN a.status = 'Present' THEN 1.0 ELSE 0.0 END) / COUNT(a.id) * 100 AS daily_pct FROM attendance a JOIN students s ON a.student_id = s.id WHERE s.grade = 10 AND a.date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY a.date ORDER BY a.date
+
+Q: "How many distinct subjects has each student been assessed in?"
+SQL: SELECT s.name, COUNT(DISTINCT a.subject) AS subject_count FROM students s JOIN assessments a ON s.id = a.student_id GROUP BY s.id, s.name ORDER BY subject_count DESC
+
+Q: "Students whose grade average is below their class average"
+SQL: SELECT s.name, ss.grade_avg, s.grade, s.section FROM students s JOIN student_summary ss ON s.id = ss.student_id WHERE ss.grade_avg < (SELECT AVG(ss2.grade_avg) FROM student_summary ss2 JOIN students s2 ON ss2.student_id = s2.id WHERE s2.grade = s.grade AND s2.section = s.section)
+
+Q: "Students with attendance below 80% and more than 2 missed assignments"
+SQL: SELECT s.name, ss.attendance_rate, COUNT(a.id) AS missed FROM students s JOIN student_summary ss ON s.id = ss.student_id JOIN assignments a ON s.id = a.student_id WHERE ss.attendance_rate < 0.80 AND a.submitted = 0 GROUP BY s.id, s.name, ss.attendance_rate HAVING COUNT(a.id) > 2
 
 IMPORTANT: When generating SQL, ALWAYS include any columns you filter or sort by in the SELECT clause.
 IMPORTANT: When searching for names or text strings, ALWAYS use `LIKE '%...%'` with wildcards instead of exact equality (`=`).
@@ -362,6 +414,15 @@ def _rewrite_sql(sql: str) -> str:
     sql = re.sub(
         r'(?<!\w)(?<!\.)\battendance\b(?!_)(?!\s)',
         lambda m: 'attendance_rate' if 'student_summary' in sql.lower() else m.group(),
+        sql,
+        flags=re.IGNORECASE,
+    )
+
+    # ── Integer Division Guard ───────────────────────────────────────────
+    # CASE THEN 1 ELSE 0 → THEN 1.0 ELSE 0.0 to prevent MySQL integer division
+    sql = re.sub(
+        r'THEN\s+1\s+ELSE\s+0(?!\.)',
+        'THEN 1.0 ELSE 0.0',
         sql,
         flags=re.IGNORECASE,
     )
