@@ -9,7 +9,7 @@ logger = logging.getLogger("attendance")
 
 from typing import List, Optional
 
-from ..db import get_db
+from ..db import get_db, AppSessionLocal
 from ..models import Student, Attendance, StudentSummary
 from ..schemas import AttendanceClassView, AttendanceBulkCreate, AttendanceOut, StudentCalendarDay, ClassCalendarDay
 import calendar
