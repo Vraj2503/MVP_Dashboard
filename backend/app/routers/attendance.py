@@ -44,19 +44,28 @@ async def recompute_attendance_rates_bg(student_ids: List[int]):
         t2 = time.monotonic()
         logger.info("[recompute] SELECT summaries took %.2fs", t2 - t1)
         
+        update_summaries = []
+        new_summaries = []
         for sid in student_ids:
             summary = summary_map.get(sid)
             if summary:
-                summary.attendance_rate = rate_map.get(sid, 0.0)
-                summary.updated_at = datetime.datetime.utcnow()
+                update_summaries.append({
+                    "student_id": sid,
+                    "attendance_rate": rate_map.get(sid, 0.0),
+                    "updated_at": datetime.datetime.utcnow()
+                })
             else:
-                new_summary = StudentSummary(
+                new_summaries.append(StudentSummary(
                     student_id=sid,
                     attendance_rate=rate_map.get(sid, 0.0),
                     risk_tier="Safe",
                     updated_at=datetime.datetime.utcnow()
-                )
-                db.add(new_summary)
+                ))
+        
+        if update_summaries:
+            await db.execute(update(StudentSummary), update_summaries)
+        if new_summaries:
+            db.add_all(new_summaries)
                 
         await db.commit()
         t3 = time.monotonic()
@@ -122,21 +131,29 @@ async def bulk_upsert_attendance(
     t_select = time.monotonic()
     logger.info("[bulk] SELECT existing took %.2fs", t_select - t_start)
     
+    update_atts = []
+    new_atts = []
     for req_rec in data.records:
         if req_rec.student_id in existing_map:
             existing = existing_map[req_rec.student_id]
-            existing.status = req_rec.status
-            if req_rec.period is not None:
-                existing.period = req_rec.period
+            update_atts.append({
+                "id": existing.id,
+                "status": req_rec.status,
+                "period": req_rec.period if req_rec.period is not None else existing.period
+            })
         else:
-            new_att = Attendance(
+            new_atts.append(Attendance(
                 student_id=req_rec.student_id,
                 date=data.date,
                 status=req_rec.status,
                 period=req_rec.period
-            )
-            db.add(new_att)
+            ))
             
+    if update_atts:
+        await db.execute(update(Attendance), update_atts)
+    if new_atts:
+        db.add_all(new_atts)
+        
     await db.commit()
     t_commit = time.monotonic()
     logger.info("[bulk] COMMIT took %.2fs | total=%.2fs", t_commit - t_select, t_commit - t_start)
