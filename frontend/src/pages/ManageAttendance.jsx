@@ -83,10 +83,11 @@ export default function ManageAttendance() {
         section,
         records: recordsToUpdate
       });
-      // optionally show a toast notification here
-      await fetchAttendance();
+      // No re-fetch needed — local attendanceState already reflects the saved values
     } catch (err) {
       console.error('Failed to save attendance:', err);
+      // Re-fetch on error to restore server state
+      await fetchAttendance();
     } finally {
       setSaving(false);
     }

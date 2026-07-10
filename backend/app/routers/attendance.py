@@ -1,7 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, and_, func, case
 import datetime
+import time
+import logging
+
+logger = logging.getLogger("attendance")
 
 from typing import List, Optional
 
@@ -10,45 +14,53 @@ from ..models import Student, Attendance, StudentSummary
 from ..schemas import AttendanceClassView, AttendanceBulkCreate, AttendanceOut, StudentCalendarDay, ClassCalendarDay
 import calendar
 
-async def recompute_attendance_rates(db: AsyncSession, student_ids: List[int]):
+async def recompute_attendance_rates_bg(student_ids: List[int]):
+    """Background task: recompute attendance rates with its own DB session."""
     if not student_ids:
         return
+    t0 = time.monotonic()
+    async with AppSessionLocal() as db:
+        att_stats_q = select(
+            Attendance.student_id,
+            func.sum(case((Attendance.status.in_(["Present", "Absent", "Late"]), 1), else_=0)).label("total_days"),
+            func.sum(case((Attendance.status == "Present", 1), else_=0)).label("present_days")
+        ).where(Attendance.student_id.in_(student_ids)).group_by(Attendance.student_id)
         
-    att_stats_q = select(
-        Attendance.student_id,
-        func.sum(case((Attendance.status.in_(["Present", "Absent", "Late"]), 1), else_=0)).label("total_days"),
-        func.sum(case((Attendance.status == "Present", 1), else_=0)).label("present_days")
-    ).where(Attendance.student_id.in_(student_ids)).group_by(Attendance.student_id)
-    
-    stats_records = (await db.execute(att_stats_q)).all()
-    
-    rate_map = {}
-    for r in stats_records:
-        if r.total_days > 0:
-            rate_map[r.student_id] = float(r.present_days or 0) / float(r.total_days)
-        else:
-            rate_map[r.student_id] = 0.0
-            
-    # Bulk fetch existing summaries
-    summary_q = select(StudentSummary).where(StudentSummary.student_id.in_(student_ids))
-    existing_summaries = (await db.execute(summary_q)).scalars().all()
-    summary_map = {s.student_id: s for s in existing_summaries}
-    
-    for sid in student_ids:
-        summary = summary_map.get(sid)
-        if summary:
-            summary.attendance_rate = rate_map.get(sid, 0.0)
-            summary.updated_at = datetime.datetime.utcnow()
-        else:
-            new_summary = StudentSummary(
-                student_id=sid,
-                attendance_rate=rate_map.get(sid, 0.0),
-                risk_tier="Safe",
-                updated_at=datetime.datetime.utcnow()
-            )
-            db.add(new_summary)
-            
-    await db.commit()
+        stats_records = (await db.execute(att_stats_q)).all()
+        t1 = time.monotonic()
+        logger.info("[recompute] SELECT stats took %.2fs", t1 - t0)
+        
+        rate_map = {}
+        for r in stats_records:
+            if r.total_days > 0:
+                rate_map[r.student_id] = float(r.present_days or 0) / float(r.total_days)
+            else:
+                rate_map[r.student_id] = 0.0
+                
+        # Bulk fetch existing summaries
+        summary_q = select(StudentSummary).where(StudentSummary.student_id.in_(student_ids))
+        existing_summaries = (await db.execute(summary_q)).scalars().all()
+        summary_map = {s.student_id: s for s in existing_summaries}
+        t2 = time.monotonic()
+        logger.info("[recompute] SELECT summaries took %.2fs", t2 - t1)
+        
+        for sid in student_ids:
+            summary = summary_map.get(sid)
+            if summary:
+                summary.attendance_rate = rate_map.get(sid, 0.0)
+                summary.updated_at = datetime.datetime.utcnow()
+            else:
+                new_summary = StudentSummary(
+                    student_id=sid,
+                    attendance_rate=rate_map.get(sid, 0.0),
+                    risk_tier="Safe",
+                    updated_at=datetime.datetime.utcnow()
+                )
+                db.add(new_summary)
+                
+        await db.commit()
+        t3 = time.monotonic()
+        logger.info("[recompute] COMMIT took %.2fs | total=%.2fs", t3 - t2, t3 - t0)
 
 router = APIRouter()
 
@@ -89,9 +101,12 @@ async def get_class_attendance(
     return out
 
 @router.post("/bulk", response_model=dict)
-async def bulk_upsert_attendance(data: AttendanceBulkCreate, db: AsyncSession = Depends(get_db)):
-    # First, get existing records for this date and class
-    # We can just fetch by student_ids in the payload
+async def bulk_upsert_attendance(
+    data: AttendanceBulkCreate,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    t_start = time.monotonic()
     student_ids = [r.student_id for r in data.records]
     if not student_ids:
         return {"message": "No records to update"}
@@ -104,16 +119,16 @@ async def bulk_upsert_attendance(data: AttendanceBulkCreate, db: AsyncSession = 
     )
     existing_records = (await db.execute(att_q)).scalars().all()
     existing_map = {r.student_id: r for r in existing_records}
+    t_select = time.monotonic()
+    logger.info("[bulk] SELECT existing took %.2fs", t_select - t_start)
     
     for req_rec in data.records:
         if req_rec.student_id in existing_map:
-            # Update existing
             existing = existing_map[req_rec.student_id]
             existing.status = req_rec.status
             if req_rec.period is not None:
                 existing.period = req_rec.period
         else:
-            # Create new
             new_att = Attendance(
                 student_id=req_rec.student_id,
                 date=data.date,
@@ -123,7 +138,11 @@ async def bulk_upsert_attendance(data: AttendanceBulkCreate, db: AsyncSession = 
             db.add(new_att)
             
     await db.commit()
-    await recompute_attendance_rates(db, student_ids)
+    t_commit = time.monotonic()
+    logger.info("[bulk] COMMIT took %.2fs | total=%.2fs", t_commit - t_select, t_commit - t_start)
+    
+    # Recompute attendance rates in the background so the response returns immediately
+    background_tasks.add_task(recompute_attendance_rates_bg, student_ids)
     return {"message": f"Successfully updated attendance for {len(data.records)} students"}
 
 @router.put("/{attendance_id}", response_model=AttendanceOut)
