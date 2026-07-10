@@ -29,8 +29,13 @@ async def recompute_attendance_rates(db: AsyncSession, student_ids: List[int]):
         else:
             rate_map[r.student_id] = 0.0
             
+    # Bulk fetch existing summaries
+    summary_q = select(StudentSummary).where(StudentSummary.student_id.in_(student_ids))
+    existing_summaries = (await db.execute(summary_q)).scalars().all()
+    summary_map = {s.student_id: s for s in existing_summaries}
+    
     for sid in student_ids:
-        summary = await db.get(StudentSummary, sid)
+        summary = summary_map.get(sid)
         if summary:
             summary.attendance_rate = rate_map.get(sid, 0.0)
             summary.updated_at = datetime.datetime.utcnow()
@@ -38,6 +43,7 @@ async def recompute_attendance_rates(db: AsyncSession, student_ids: List[int]):
             new_summary = StudentSummary(
                 student_id=sid,
                 attendance_rate=rate_map.get(sid, 0.0),
+                risk_tier="Safe",
                 updated_at=datetime.datetime.utcnow()
             )
             db.add(new_summary)
