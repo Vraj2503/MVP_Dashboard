@@ -126,17 +126,18 @@ async def bulk_upsert_attendance(
     ).bindparams(bindparam("sids", expanding=True), bindparam("dt"))
     await db.execute(delete_stmt, {"sids": student_ids, "dt": data.date})
     
-    # Step 2: Batch INSERT all records in one statement
+    # Step 2: Batch INSERT all records using Core insert (reliable executemany)
     if data.records:
-        values = [
-            {"sid": r.student_id, "dt": data.date, "st": r.status, "pd": r.period}
+        rows = [
+            {
+                "student_id": r.student_id,
+                "date": data.date,
+                "status": r.status,
+                "period": r.period,
+            }
             for r in data.records
         ]
-        insert_stmt = text(
-            "INSERT INTO attendance (student_id, date, status, period) "
-            "VALUES (:sid, :dt, :st, :pd)"
-        )
-        await db.execute(insert_stmt, values)
+        await db.execute(Attendance.__table__.insert(), rows)
         
     # Step 3: Commit
     await db.commit()
