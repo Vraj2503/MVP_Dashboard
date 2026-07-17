@@ -1,6 +1,6 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, and_, func, case
+from sqlalchemy import select, update, and_, func, case, text, bindparam
 import datetime
 import time
 import logging
