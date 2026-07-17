@@ -120,45 +120,30 @@ async def bulk_upsert_attendance(
     if not student_ids:
         return {"message": "No records to update"}
         
-    att_q = select(Attendance).where(
-        and_(
-            Attendance.student_id.in_(student_ids),
-            Attendance.date == data.date
-        )
-    )
-    existing_records = (await db.execute(att_q)).scalars().all()
-    existing_map = {r.student_id: r for r in existing_records}
-    t_select = time.monotonic()
-    logger.info("[bulk] SELECT existing took %.2fs", t_select - t_start)
+    # Step 1: DELETE existing records for these students on this date
+    delete_stmt = text(
+        "DELETE FROM attendance WHERE student_id IN :sids AND date = :dt"
+    ).bindparams(bindparam("sids", expanding=True), bindparam("dt"))
+    await db.execute(delete_stmt, {"sids": student_ids, "dt": data.date})
     
-    update_atts = []
-    new_atts = []
-    for req_rec in data.records:
-        if req_rec.student_id in existing_map:
-            existing = existing_map[req_rec.student_id]
-            update_atts.append({
-                "id": existing.id,
-                "status": req_rec.status,
-                "period": req_rec.period if req_rec.period is not None else existing.period
-            })
-        else:
-            new_atts.append(Attendance(
-                student_id=req_rec.student_id,
-                date=data.date,
-                status=req_rec.status,
-                period=req_rec.period
-            ))
-            
-    if update_atts:
-        await db.execute(update(Attendance), update_atts)
-    if new_atts:
-        db.add_all(new_atts)
+    # Step 2: Batch INSERT all records in one statement
+    if data.records:
+        values = [
+            {"sid": r.student_id, "dt": data.date, "st": r.status, "pd": r.period}
+            for r in data.records
+        ]
+        insert_stmt = text(
+            "INSERT INTO attendance (student_id, date, status, period) "
+            "VALUES (:sid, :dt, :st, :pd)"
+        )
+        await db.execute(insert_stmt, values)
         
+    # Step 3: Commit
     await db.commit()
     t_commit = time.monotonic()
-    logger.info("[bulk] COMMIT took %.2fs | total=%.2fs", t_commit - t_select, t_commit - t_start)
+    logger.info("[bulk] raw SQL total=%.2fs", t_commit - t_start)
     
-    # Recompute attendance rates in the background so the response returns immediately
+    # Background: recompute attendance rates (non-blocking)
     background_tasks.add_task(recompute_attendance_rates_bg, student_ids)
     return {"message": f"Successfully updated attendance for {len(data.records)} students"}
 
